@@ -1,0 +1,25 @@
+[Unit]
+Description=IT Consultant file-based DB reindex service
+Documentation=file:///opt/it-consultant
+After=network-online.target
+Wants=network-online.target
+PartOf=it-consultant.target
+
+[Service]
+Type=simple
+User=it-consultant
+Group=it-consultant
+WorkingDirectory=/opt/it-consultant
+EnvironmentFile=-/etc/it-consultant/.env
+ExecStart=/opt/it-consultant/.venv/bin/python -m reindex
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Allow reading/writing the watched DB directory
+ReadWritePaths=/var/lib/it-consultant
+
+[Install]
+WantedBy=it-consultant.target

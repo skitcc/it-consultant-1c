@@ -32,3 +32,6 @@ packages = ["common", "mail_gateway", "reindex"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "slow: full install with venv/pip (skipped when venv unavailable)",
+]
