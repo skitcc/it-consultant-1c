@@ -18,12 +18,16 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+reindex = [
+    "watchdog>=4.0.0",
+]
 
 [project.scripts]
 mail-gateway = "mail_gateway.__main__:main"
+reindex = "reindex.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["common", "mail_gateway"]
+packages = ["common", "mail_gateway", "reindex"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
