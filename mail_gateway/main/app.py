@@ -34,16 +34,27 @@ def run(settings: Settings | None = None) -> None:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 
+    login = settings.ews_username or settings.ews_email
+    logger.info(
+        "Connecting to EWS server=%s auth=%s login=%s mailbox=%s",
+        settings.ews_server,
+        settings.ews_auth,
+        login,
+        settings.ews_email,
+    )
     account = build_account(
         server=settings.ews_server,
         email=settings.ews_email,
         password=settings.ews_password,
         auth=settings.ews_auth,
         verify_ssl=settings.ews_verify_ssl,
+        username=settings.ews_username,
     )
     listener = EwsMailListener(
         account,
         connection_timeout_minutes=settings.ews_streaming_timeout_minutes,
+        ignore_own_mail=settings.ews_ignore_own_mail,
+        catchup_minutes=settings.ews_catchup_minutes,
     )
     sender = EwsMailSender(account)
     assistant = build_assistant(settings)

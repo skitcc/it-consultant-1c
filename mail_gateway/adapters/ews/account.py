@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from exchangelib import BASIC, DELEGATE, NTLM, Account, Configuration, Credentials
 from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
 
@@ -11,6 +13,24 @@ _AUTH_TYPES = {
 }
 
 
+def normalize_ews_server(server: str) -> str:
+    """Return hostname for exchangelib Configuration.server.
+
+    Accepts either a bare host (mail.example.com) or a full EWS URL
+    (https://mail.example.com/EWS/Exchange.asmx).
+    """
+    value = server.strip()
+    if "://" not in value:
+        return value.split("/", 1)[0]
+
+    parsed = urlparse(value)
+    if not parsed.hostname:
+        raise ValueError(
+            f"Invalid EWS_SERVER={server!r}. Use host only, e.g. mail.company.ru"
+        )
+    return parsed.hostname
+
+
 def build_account(
     *,
     server: str,
@@ -18,6 +38,7 @@ def build_account(
     password: str,
     auth: str = "ntlm",
     verify_ssl: bool = True,
+    username: str | None = None,
 ) -> Account:
     if not verify_ssl:
         BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
@@ -26,8 +47,10 @@ def build_account(
     if auth_type is None:
         raise ValueError(f"Unsupported EWS auth type: {auth!r}. Use ntlm or basic.")
 
-    credentials = Credentials(username=email, password=password)
-    config = Configuration(server=server, credentials=credentials, auth_type=auth_type)
+    host = normalize_ews_server(server)
+    login = (username or email).strip()
+    credentials = Credentials(username=login, password=password)
+    config = Configuration(server=host, credentials=credentials, auth_type=auth_type)
     return Account(
         primary_smtp_address=email,
         config=config,
