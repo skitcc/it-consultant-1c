@@ -27,6 +27,18 @@ def build_assistant(settings: Settings) -> Assistant:
     )
 
 
+def _account_from_settings(settings: Settings):
+    return build_account(
+        server=settings.ews_server,
+        email=settings.ews_email,
+        password=settings.ews_password,
+        auth=settings.ews_auth,
+        verify_ssl=settings.ews_verify_ssl,
+        username=settings.ews_username,
+        session_pool_size=settings.ews_session_pool_size,
+    )
+
+
 def run(settings: Settings | None = None) -> None:
     settings = settings or Settings()
     logging.basicConfig(
@@ -42,21 +54,23 @@ def run(settings: Settings | None = None) -> None:
         login,
         settings.ews_email,
     )
-    account = build_account(
-        server=settings.ews_server,
-        email=settings.ews_email,
-        password=settings.ews_password,
-        auth=settings.ews_auth,
-        verify_ssl=settings.ews_verify_ssl,
-        username=settings.ews_username,
+    # Two EWS sessions: streaming blocks one HTTP connection; fetch/reply need another.
+    stream_account = _account_from_settings(settings)
+    work_account = _account_from_settings(settings)
+    logger.info(
+        "EWS transport initialized shared_protocol=%s session_pool_max=%s",
+        stream_account.protocol is work_account.protocol,
+        stream_account.protocol._session_pool_maxsize,
     )
+
     listener = EwsMailListener(
-        account,
+        stream_account,
+        work_account,
         connection_timeout_minutes=settings.ews_streaming_timeout_minutes,
         ignore_own_mail=settings.ews_ignore_own_mail,
         catchup_minutes=settings.ews_catchup_minutes,
     )
-    sender = EwsMailSender(account)
+    sender = EwsMailSender(work_account)
     assistant = build_assistant(settings)
     handle = HandleIncomingMail(assistant=assistant, mail_sender=sender)
 
@@ -70,7 +84,18 @@ def run(settings: Settings | None = None) -> None:
         try:
             for message in listener.listen():
                 try:
+                    started_at = time.perf_counter()
+                    logger.info(
+                        "Pipeline start conversation_id=%s item_id=%s",
+                        message.conversation_id,
+                        message.item_id,
+                    )
                     handle(message)
+                    logger.info(
+                        "Pipeline complete conversation_id=%s elapsed=%.3fs",
+                        message.conversation_id,
+                        time.perf_counter() - started_at,
+                    )
                 except Exception:
                     logger.exception(
                         "Failed to handle message conversation_id=%s item_id=%s",

@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     ews_server: str = Field(alias="EWS_SERVER")
     ews_email: str = Field(alias="EWS_EMAIL")
     ews_password: str = Field(alias="EWS_PASSWORD")
-    # AD login for EWS (often DOMAIN\user). Defaults to EWS_EMAIL if empty.
     ews_username: str | None = Field(default=None, alias="EWS_USERNAME")
     ews_auth: str = Field(default="ntlm", alias="EWS_AUTH")
     ews_verify_ssl: bool = Field(default=True, alias="EWS_VERIFY_SSL")
@@ -26,9 +25,8 @@ class Settings(BaseSettings):
         default=30,
         alias="EWS_STREAMING_TIMEOUT_MINUTES",
     )
-    # Skip messages where sender == our mailbox (anti reply-loop).
+    ews_session_pool_size: int = Field(default=2, alias="EWS_SESSION_POOL_SIZE")
     ews_ignore_own_mail: bool = Field(default=True, alias="EWS_IGNORE_OWN_MAIL")
-    # On start, also process unread inbox mail from the last N minutes (0 = off).
     ews_catchup_minutes: int = Field(default=30, alias="EWS_CATCHUP_MINUTES")
 
     ai_service_url: str = Field(

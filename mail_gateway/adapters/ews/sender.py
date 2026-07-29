@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from exchangelib import Account, Message
 
@@ -17,9 +18,22 @@ class EwsMailSender(MailSender):
         self._account = account
 
     def send_reply(self, reply: Reply) -> None:
-        item = self._account.inbox.get(
-            id=reply.in_reply_to_item_id,
-            changekey=reply.in_reply_to_change_key,
+        started_at = time.perf_counter()
+        logger.info(
+            "Loading source message for reply item_id=%s pool_size=%s/%s",
+            reply.in_reply_to_item_id,
+            self._account.protocol.session_pool_size,
+            self._account.protocol._session_pool_maxsize,
+        )
+        kwargs: dict[str, object] = {"id": reply.in_reply_to_item_id}
+        if reply.in_reply_to_change_key:
+            kwargs["changekey"] = reply.in_reply_to_change_key
+        item = self._account.inbox.get(**kwargs)
+        logger.info(
+            "Source message loaded for reply item_id=%s elapsed=%.3fs type=%s",
+            reply.in_reply_to_item_id,
+            time.perf_counter() - started_at,
+            type(item).__name__,
         )
         if not isinstance(item, Message):
             raise TypeError(
@@ -30,9 +44,15 @@ class EwsMailSender(MailSender):
         if not subject.lower().startswith("re:"):
             subject = f"Re: {subject}"
 
-        item.reply(subject=subject, body=reply.body)
         logger.info(
-            "EWS reply sent conversation_id=%s in_reply_to=%s",
+            "Sending EWS reply conversation_id=%s in_reply_to=%s",
             reply.conversation_id,
             reply.in_reply_to_item_id,
+        )
+        item.reply(subject=subject, body=reply.body)
+        logger.info(
+            "EWS reply sent conversation_id=%s in_reply_to=%s elapsed=%.3fs",
+            reply.conversation_id,
+            reply.in_reply_to_item_id,
+            time.perf_counter() - started_at,
         )

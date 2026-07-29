@@ -39,7 +39,19 @@ def build_account(
     auth: str = "ntlm",
     verify_ssl: bool = True,
     username: str | None = None,
+    session_pool_size: int = 2,
 ) -> Account:
+    if session_pool_size < 2:
+        raise ValueError(
+            "EWS_SESSION_POOL_SIZE must be at least 2: streaming holds one "
+            "session while message fetch/reply needs another"
+        )
+
+    # exchangelib caches Protocol instances per endpoint. Separate Account
+    # objects therefore still share this pool. Its default size is 1, which
+    # deadlocks when we fetch an item while GetStreamingEvents is active.
+    BaseProtocol.SESSION_POOLSIZE = session_pool_size
+
     if not verify_ssl:
         BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
 
