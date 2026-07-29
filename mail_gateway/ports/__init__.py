@@ -1,0 +1,25 @@
+from collections.abc import Iterator
+from typing import Protocol, runtime_checkable
+
+from mail_gateway.domain.models import IncomingMessage, Reply
+
+
+@runtime_checkable
+class MailListener(Protocol):
+    def listen(self) -> Iterator[IncomingMessage]:
+        """Yield incoming messages until the subscription ends or errors."""
+        ...
+
+
+@runtime_checkable
+class MailSender(Protocol):
+    def send_reply(self, reply: Reply) -> None:
+        """Send a reply into the same conversation."""
+        ...
+
+
+@runtime_checkable
+class Assistant(Protocol):
+    def ask(self, message: IncomingMessage) -> str | None:
+        """Return answer text, or None when no relevant answer exists."""
+        ...
