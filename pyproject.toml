@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mail-gateway"
 version = "0.1.0"
-description = "Email gateway for IT consultant: Exchange EWS to AI service"
+description = "IT consultant services: Exchange mail gateway and file-based DB reindex"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -23,7 +23,7 @@ dev = [
 mail-gateway = "mail_gateway.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mail_gateway"]
+packages = ["common", "mail_gateway"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

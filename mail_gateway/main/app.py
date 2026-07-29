@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 import time
 
+from common import Settings
+from common.logging_config import configure_logging
 from mail_gateway.adapters.assistant.http_assistant import HttpAssistant
 from mail_gateway.adapters.assistant.stub_assistant import StubAssistant
 from mail_gateway.adapters.ews.account import build_account
 from mail_gateway.adapters.ews.listener import EwsMailListener
 from mail_gateway.adapters.ews.sender import EwsMailSender
 from mail_gateway.application.handle_incoming_mail import HandleIncomingMail
-from mail_gateway.main.config import Settings
 from mail_gateway.ports import Assistant
 
 logger = logging.getLogger(__name__)
@@ -41,10 +42,7 @@ def _account_from_settings(settings: Settings):
 
 def run(settings: Settings | None = None) -> None:
     settings = settings or Settings()
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
+    configure_logging(settings.log_level)
 
     login = settings.ews_username or settings.ews_email
     logger.info(
