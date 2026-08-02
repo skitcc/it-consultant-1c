@@ -8,11 +8,28 @@ import threading
 from pathlib import Path
 
 from common import Settings
+from common.embeddings import OllamaEmbedder
 from common.logging_config import configure_logging
-from reindex.indexer import Indexer, LoggingIndexer
+from reindex.indexer import Indexer
+from reindex.qdrant_indexer import QdrantIndexer
 from reindex.watcher import ChangeHandler, DebouncedReindex, create_observer
 
 logger = logging.getLogger(__name__)
+
+
+def build_indexer(settings: Settings) -> Indexer:
+    embedder = OllamaEmbedder(
+        base_url=settings.ollama_base_url,
+        model=settings.embedding_model,
+        timeout_sec=settings.embedding_timeout_sec,
+    )
+    return QdrantIndexer(
+        qdrant_url=settings.qdrant_url,
+        collection=settings.qdrant_collection,
+        embedder=embedder,
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+    )
 
 
 def run(
@@ -30,7 +47,7 @@ def run(
     if not watch.exists():
         raise FileNotFoundError(f"watch_path does not exist: {watch}")
 
-    idx = indexer if indexer is not None else LoggingIndexer()
+    idx = indexer if indexer is not None else build_indexer(cfg)
 
     debouncer = DebouncedReindex(
         indexer=idx,
@@ -53,10 +70,18 @@ def run(
     signal.signal(signal.SIGINT, _shutdown)
 
     logger.info(
-        "Starting reindex watcher on %s (debounce=%ss)",
+        "Starting reindex watcher on %s (debounce=%ss qdrant=%s collection=%s)",
         watch,
         cfg.debounce_seconds,
+        cfg.qdrant_url,
+        cfg.qdrant_collection,
     )
+    # Initial full index so cold start has vectors without waiting for FS events.
+    try:
+        idx.reindex(str(watch))
+    except Exception:
+        logger.exception("Initial reindex failed for %s", watch)
+
     observer.start()
     try:
         while not stop_event.wait(timeout=1.0):

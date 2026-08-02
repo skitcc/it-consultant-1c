@@ -41,6 +41,22 @@ class Settings(BaseSettings):
 
     reconnect_delay_sec: float = Field(default=5.0, alias="RECONNECT_DELAY_SEC")
 
+    # --- RAG / Qdrant (shared by mail_gateway and reindex) ---
+    qdrant_url: str = Field(default="http://127.0.0.1:6333", alias="QDRANT_URL")
+    qdrant_collection: str = Field(default="docs", alias="QDRANT_COLLECTION")
+    embedding_model: str = Field(default="nomic-embed-text", alias="EMBEDDING_MODEL")
+    embedding_timeout_sec: float = Field(
+        default=120.0,
+        alias="EMBEDDING_TIMEOUT_SEC",
+    )
+    rag_top_k: int = Field(default=5, alias="RAG_TOP_K")
+    rag_score_threshold: float | None = Field(
+        default=None,
+        alias="RAG_SCORE_THRESHOLD",
+    )
+    chunk_size: int = Field(default=1200, alias="CHUNK_SIZE")
+    chunk_overlap: int = Field(default=150, alias="CHUNK_OVERLAP")
+
     # --- reindex ---
     watch_path: str = Field(
         default="/var/lib/it-consultant/db",
