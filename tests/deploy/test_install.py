@@ -128,7 +128,6 @@ def test_full_install_venv_and_smoke_reindex(fake_root: Path, tmp_path: Path) ->
             "EWS_SERVER": "mail.example.com",
             "EWS_EMAIL": "bot@example.com",
             "EWS_PASSWORD": "secret",
-            "ASSISTANT_MODE": "stub",
             "WATCH_PATH": str(watch),
             "DEBOUNCE_SECONDS": "0.2",
             "LOG_LEVEL": "INFO",

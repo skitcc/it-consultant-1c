@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,15 +31,13 @@ class Settings(BaseSettings):
     ews_ignore_own_mail: bool = Field(default=True, alias="EWS_IGNORE_OWN_MAIL")
     ews_catchup_minutes: int = Field(default=30, alias="EWS_CATCHUP_MINUTES")
 
-    ai_service_url: str = Field(
-        default="http://127.0.0.1:8000/v1/ask",
-        alias="AI_SERVICE_URL",
+    ai_system_prompt: str | None = Field(default=None, alias="AI_SYSTEM_PROMPT")
+    ollama_base_url: str = Field(
+        default="http://127.0.0.1:11434",
+        alias="OLLAMA_BASE_URL",
     )
-    ai_timeout_sec: float = Field(default=120.0, alias="AI_TIMEOUT_SEC")
-    assistant_mode: Literal["http", "stub"] = Field(
-        default="stub",
-        alias="ASSISTANT_MODE",
-    )
+    ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
+    ollama_timeout_sec: float = Field(default=300.0, alias="OLLAMA_TIMEOUT_SEC")
 
     reconnect_delay_sec: float = Field(default=5.0, alias="RECONNECT_DELAY_SEC")
 

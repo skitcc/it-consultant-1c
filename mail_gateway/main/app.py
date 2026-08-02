@@ -7,25 +7,14 @@ import time
 
 from common import Settings
 from common.logging_config import configure_logging
-from mail_gateway.adapters.assistant.http_assistant import HttpAssistant
-from mail_gateway.adapters.assistant.stub_assistant import StubAssistant
+from mail_gateway.adapters.assistant.ollama_assistant import OllamaAssistant
 from mail_gateway.adapters.ews.account import build_account
+from mail_gateway.adapters.ews.conversation_history import EwsConversationHistoryLoader
 from mail_gateway.adapters.ews.listener import EwsMailListener
 from mail_gateway.adapters.ews.sender import EwsMailSender
 from mail_gateway.application.handle_incoming_mail import HandleIncomingMail
-from mail_gateway.ports import Assistant
 
 logger = logging.getLogger(__name__)
-
-
-def build_assistant(settings: Settings) -> Assistant:
-    if settings.assistant_mode == "stub":
-        logger.warning("ASSISTANT_MODE=stub — using StubAssistant")
-        return StubAssistant()
-    return HttpAssistant(
-        settings.ai_service_url,
-        timeout_sec=settings.ai_timeout_sec,
-    )
 
 
 def _account_from_settings(settings: Settings):
@@ -69,13 +58,27 @@ def run(settings: Settings | None = None) -> None:
         catchup_minutes=settings.ews_catchup_minutes,
     )
     sender = EwsMailSender(work_account)
-    assistant = build_assistant(settings)
-    handle = HandleIncomingMail(assistant=assistant, mail_sender=sender)
+    history_loader = EwsConversationHistoryLoader(
+        work_account,
+        bot_email=settings.ews_email,
+    )
+    assistant = OllamaAssistant(
+        base_url=settings.ollama_base_url,
+        model=settings.ollama_model,
+        timeout_sec=settings.ollama_timeout_sec,
+        system_prompt=settings.ai_system_prompt,
+    )
+    handle = HandleIncomingMail(
+        assistant=assistant,
+        mail_sender=sender,
+        history_loader=history_loader,
+    )
 
     logger.info(
-        "Mail gateway started mailbox=%s assistant=%s",
+        "Mail gateway started mailbox=%s ollama=%s model=%s",
         settings.ews_email,
-        settings.assistant_mode,
+        settings.ollama_base_url,
+        settings.ollama_model,
     )
 
     while True:

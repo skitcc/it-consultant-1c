@@ -1,4 +1,3 @@
-from mail_gateway.adapters.assistant.http_assistant import HttpAssistant
-from mail_gateway.adapters.assistant.stub_assistant import StubAssistant
+from mail_gateway.adapters.assistant.ollama_assistant import OllamaAssistant
 
-__all__ = ["HttpAssistant", "StubAssistant"]
+__all__ = ["OllamaAssistant"]
