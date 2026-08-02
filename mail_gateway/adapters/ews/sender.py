@@ -49,7 +49,11 @@ class EwsMailSender(MailSender):
             reply.conversation_id,
             reply.in_reply_to_item_id,
         )
-        item.reply(subject=subject, body=reply.body)
+        # create_reply + explicit body avoids dumping the whole quoted thread
+        # into Sent Items (which later pollutes model history).
+        draft = item.create_reply(subject=subject, body=reply.body)
+        draft.body = reply.body
+        draft.send()
         logger.info(
             "EWS reply sent conversation_id=%s in_reply_to=%s elapsed=%.3fs",
             reply.conversation_id,

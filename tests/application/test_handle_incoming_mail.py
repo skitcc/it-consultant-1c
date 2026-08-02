@@ -2,7 +2,7 @@ from mail_gateway.application.handle_incoming_mail import (
     ADMIN_FALLBACK_TEXT,
     HandleIncomingMail,
 )
-from mail_gateway.domain.models import IncomingMessage, Reply
+from mail_gateway.domain.models import ConversationTurn, IncomingMessage, Reply
 
 
 class FakeAssistant:
@@ -21,6 +21,16 @@ class FakeSender:
 
     def send_reply(self, reply: Reply) -> None:
         self.sent.append(reply)
+
+
+class FakeHistoryLoader:
+    def __init__(self, turns: list[ConversationTurn]) -> None:
+        self.turns = turns
+        self.calls: list[str] = []
+
+    def load(self, conversation_id: str) -> list[ConversationTurn]:
+        self.calls.append(conversation_id)
+        return list(self.turns)
 
 
 def _message() -> IncomingMessage:
@@ -46,6 +56,8 @@ def test_sends_assistant_reply() -> None:
     assert sender.sent[0].body == "Answer from AI"
     assert sender.sent[0].conversation_id == "conv-1"
     assert sender.sent[0].in_reply_to_item_id == "item-1"
+    assert len(assistant.calls[0].messages) == 1
+    assert assistant.calls[0].messages[0].body == "Please help"
 
 
 def test_uses_admin_fallback_when_no_reply() -> None:
@@ -66,3 +78,38 @@ def test_uses_admin_fallback_when_empty_reply() -> None:
     handle(_message())
 
     assert sender.sent[0].body == ADMIN_FALLBACK_TEXT
+
+
+def test_passes_conversation_history_to_assistant() -> None:
+    history = [
+        ConversationTurn(
+            role="user",
+            body="first question",
+            from_address="user@company.ru",
+            subject="How to print?",
+            item_id="item-0",
+        ),
+        ConversationTurn(
+            role="assistant",
+            body="first answer",
+            from_address="bot@company.ru",
+            subject="Re: How to print?",
+            item_id="item-bot-0",
+        ),
+    ]
+    assistant = FakeAssistant("follow-up answer")
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=assistant,
+        mail_sender=sender,
+        history_loader=FakeHistoryLoader(history),
+    )
+
+    handle(_message())
+
+    assert len(assistant.calls) == 1
+    assert len(assistant.calls[0].messages) == 3
+    assert assistant.calls[0].messages[0].body == "first question"
+    assert assistant.calls[0].messages[1].role == "assistant"
+    assert assistant.calls[0].messages[2].item_id == "item-1"
+    assert assistant.calls[0].messages[2].body == "Please help"
