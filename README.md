@@ -7,8 +7,8 @@
 | Пакет | Назначение |
 |-------|------------|
 | `common` | Общие настройки (`Settings`) и утилиты |
-| `mail_gateway` | Exchange (EWS Streaming) → Ollama → reply в тот же conversation |
-| `reindex` | Следит за каталогом файловой БД и при изменениях запускает реиндексацию |
+| `mail_gateway` | Exchange (EWS Streaming) → Qdrant RAG → Ollama → reply |
+| `reindex` | Следит за каталогом документов и индексирует их в Qdrant |
 
 Общий конфиг — один класс [`common.Settings`](common/settings.py), читается из `.env` / переменных окружения. Оба сервиса используют одни и те же переменные.
 
@@ -72,7 +72,7 @@ pytest tests/deploy -q -m slow  # полный install + smoke `python -m reinde
 
 # Mail Gateway
 
-Почтовый шлюз: Exchange (EWS Streaming) → Ollama (`/api/chat`) → reply в тот же conversation.
+Почтовый шлюз: Exchange (EWS Streaming) → RAG (Qdrant) → Ollama (`/api/chat`) → reply в тот же conversation.
 
 ## Структура
 
@@ -82,7 +82,7 @@ mail_gateway/
   domain/       # модели (IncomingMessage, Reply)
   ports/        # контракты MailListener, MailSender, Assistant
   application/  # сценарий HandleIncomingMail
-  adapters/     # реализации портов (EWS, Ollama)
+  adapters/     # реализации портов (EWS, Ollama, Qdrant RAG)
   main/         # composition root
 tests/
 ```
@@ -94,9 +94,11 @@ tests/
 
 1. EWS Streaming: событие `NewMail` в Inbox.
 2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
-3. Загрузка треда, очистка тел, `POST` в Ollama `/api/chat`.
-4. Reply через EWS в тот же тред.
-5. При обрыве streaming — reconnect.
+3. Загрузка треда, очистка тел.
+4. Embedding вопроса → поиск top_k в Qdrant → фрагменты в `system_prompt`.
+5. `POST` в Ollama `/api/chat`.
+6. Reply через EWS в тот же тред.
+7. При обрыве streaming — reconnect.
 
 `change_key` — версия объекта письма в Exchange. Вместе с `item_id` однозначно указывает на конкретную ревизию письма; без него `get`/`reply` могут упасть, если письмо уже изменилось.
 
@@ -112,28 +114,34 @@ pytest
 
 ### 2. Round-trip с реальным ящиком + Ollama
 
-1. Подними модель:
+1. Подними сервисы:
    ```bash
-   docker compose up -d ollama
+   docker compose up -d ollama qdrant
+   ollama pull llama3.2
+   ollama pull nomic-embed-text
    ```
 2. В `.env`:
    - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
    - `OLLAMA_MODEL=llama3.2`
+   - `EMBEDDING_MODEL=nomic-embed-text`
+   - `QDRANT_URL=http://127.0.0.1:6333`
    - рабочие `EWS_*`
-3. Запуск:
+3. Проиндексируйте документы (`WATCH_PATH`) через `python -m reindex`.
+4. Запуск шлюза:
    ```bash
    python -m mail_gateway
    ```
-4. Напишите письмо на ящик бота. В логах будет `Assistant payload` (с `system_prompt`) и ответ модели.
+5. Напишите письмо на ящик бота. В логах будет `Assistant payload` (с `system_prompt` и фрагментами документации) и ответ модели.
 
 ## Контракт Ollama
 
-Шлюз подтягивает тред из Exchange, чистит тела и логирует внутренний payload:
+Шлюз подтягивает тред из Exchange, чистит тела, ищет релевантные чанки в Qdrant
+и логирует внутренний payload:
 
 ```json
 {
   "conversation_id": "...",
-  "system_prompt": "Ты IT-консультант...",
+  "system_prompt": "Ты IT-консультант...\n\nРелевантные фрагменты документации:\n[1] source=guide.md\n...",
   "messages": [
     {"role": "user", "body": "test"},
     {"role": "assistant", "body": "ответ"},
@@ -144,61 +152,68 @@ pytest
 
 В Ollama уходит `POST /api/chat` с `messages`: `system` + история `user`/`assistant`
 (`body` → `content`). Системный промпт можно переопределить через `AI_SYSTEM_PROMPT`.
+Модель с Qdrant напрямую не общается — retrieval делает `mail_gateway`.
 
 ---
 
 # Reindex
 
-Сервис следит за каталогом файловой базы данных (рекурсивно: файлы и поддиректории) и после паузы без новых событий вызывает реиндексацию.
+Сервис следит за каталогом документации (`WATCH_PATH`) и после паузы без новых
+событий индексирует файлы в Qdrant: parse → chunk → Ollama embeddings → upsert.
 
-Настоящая индексация пока не реализована: есть абстрактный `Indexer` и stub `LoggingIndexer`, который пишет debug в лог.
+Поддерживаемые типы: `.txt`, `.md`, `.markdown`, `.rst`, `.log`, `.csv`, а также
+`.pdf` / `.docx` (нужен `pip install -e ".[reindex]"`).
 
 ## Структура
 
 ```
 reindex/
-  indexer.py     # ABC Indexer + LoggingIndexer (stub)
-  watcher.py     # watchdog + DebouncedReindex
-  service.py     # composition root и run loop
-deploy/          # install.sh + systemd units
-tests/reindex/   # интеграционные и unit-тесты
+  indexer.py          # ABC Indexer + LoggingIndexer (stub для тестов)
+  documents.py        # обход и чтение файлов
+  qdrant_indexer.py   # QdrantIndexer
+  watcher.py          # watchdog + DebouncedReindex
+  service.py          # composition root и run loop
+common/
+  embeddings.py       # OllamaEmbedder (/api/embeddings)
+  chunking.py         # разбиение текста на чанки
+deploy/               # install.sh + systemd units
+tests/reindex/
 ```
 
 ## Поток
 
-1. `watchdog` рекурсивно наблюдает `WATCH_PATH`.
-2. События create / modify / delete / move (файлы и директории) сбрасывают debounce-таймер.
-3. После `DEBOUNCE_SECONDS` тишины вызывается `Indexer.reindex(watch_path)`.
-4. Ошибка в indexer логируется; сервис продолжает работать.
+1. При старте — полный reindex каталога.
+2. `watchdog` рекурсивно наблюдает `WATCH_PATH`.
+3. События create / modify / delete / move сбрасывают debounce-таймер.
+4. После `DEBOUNCE_SECONDS` тишины — снова полный reindex в коллекцию Qdrant.
+5. Ошибка в indexer логируется; сервис продолжает работать.
 
 ## Конфиг (через общий `.env`)
 
 | Переменная | Описание | По умолчанию |
 |------------|----------|--------------|
-| `WATCH_PATH` | Каталог файловой БД (должен существовать) | `/var/lib/it-consultant/db` |
-| `DEBOUNCE_SECONDS` | Пауза перед реиндексацией после последнего события | `1.0` |
+| `WATCH_PATH` | Каталог документов (должен существовать) | `/var/lib/it-consultant/db` |
+| `DEBOUNCE_SECONDS` | Пауза перед реиндексацией | `1.0` |
+| `QDRANT_URL` | HTTP API Qdrant | `http://127.0.0.1:6333` |
+| `QDRANT_COLLECTION` | Имя коллекции | `docs` |
+| `EMBEDDING_MODEL` | Модель embeddings в Ollama | `nomic-embed-text` |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | Размер чанка и overlap (символы) | `1200` / `150` |
 | `LOG_LEVEL` | Уровень логов | `INFO` |
 
-Плюс общие / mail-поля из [`.env.example`](.env.example) (один файл на оба сервиса).
+Плюс общие / mail-поля из [`.env.example`](.env.example).
 
 ## Запуск
 
 ```bash
+docker compose up -d ollama qdrant
+ollama pull nomic-embed-text
 pip install -e ".[reindex,dev]"
 python -m reindex
 ```
 
 ## Indexer
 
-```python
-class Indexer(ABC):
-    def reindex(self, watch_path: str) -> None: ...
-
-class LoggingIndexer(Indexer):
-    # stub: только debug-лог, без реальной индексации
-```
-
-В `main` по умолчанию используется `LoggingIndexer`. Позже сюда подставится реальная реализация.
+По умолчанию используется `QdrantIndexer`. Stub `LoggingIndexer` остаётся для тестов.
 
 ## Тесты
 

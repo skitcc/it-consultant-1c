@@ -16,3 +16,4 @@ data/
 .idea/
 .vscode/
 *.log
+tmp.txt
