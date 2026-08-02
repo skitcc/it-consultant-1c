@@ -2,7 +2,12 @@ from mail_gateway.adapters.assistant.payload import (
     DEFAULT_SYSTEM_PROMPT,
     build_assistant_payload,
 )
-from mail_gateway.domain.models import ConversationTurn, IncomingMessage, with_messages
+from mail_gateway.domain.models import (
+    ConversationTurn,
+    IncomingMessage,
+    with_messages,
+    with_rag_context,
+)
 
 
 def test_build_assistant_payload_is_minimal_and_cleaned() -> None:
@@ -66,3 +71,21 @@ def test_custom_system_prompt_in_payload() -> None:
     )
     payload = build_assistant_payload(message, system_prompt="Отвечай кратко.")
     assert payload["system_prompt"] == "Отвечай кратко."
+
+
+def test_rag_context_appended_to_system_prompt() -> None:
+    message = IncomingMessage(
+        conversation_id="c",
+        item_id="i",
+        change_key="k",
+        from_address="u@x.ru",
+        subject="s",
+        body="hi",
+    )
+    message = with_rag_context(
+        message,
+        "Релевантные фрагменты документации:\n[1] source=a.md\ntext",
+    )
+    payload = build_assistant_payload(message, system_prompt="Base.")
+    assert payload["system_prompt"].startswith("Base.")
+    assert "source=a.md" in payload["system_prompt"]

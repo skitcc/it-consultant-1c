@@ -2,7 +2,7 @@ from mail_gateway.application.handle_incoming_mail import (
     ADMIN_FALLBACK_TEXT,
     HandleIncomingMail,
 )
-from mail_gateway.domain.models import ConversationTurn, IncomingMessage, Reply
+from mail_gateway.domain.models import ConversationTurn, DocumentChunk, IncomingMessage, Reply
 
 
 class FakeAssistant:
@@ -113,3 +113,39 @@ def test_passes_conversation_history_to_assistant() -> None:
     assert assistant.calls[0].messages[1].role == "assistant"
     assert assistant.calls[0].messages[2].item_id == "item-1"
     assert assistant.calls[0].messages[2].body == "Please help"
+
+
+class FakeRetriever:
+    def __init__(self, chunks: list[DocumentChunk]) -> None:
+        self.chunks = chunks
+        self.calls: list[str] = []
+
+    def retrieve(self, query: str) -> list[DocumentChunk]:
+        self.calls.append(query)
+        return list(self.chunks)
+
+
+def test_attaches_rag_context_from_retriever() -> None:
+    retriever = FakeRetriever(
+        [
+            DocumentChunk(
+                text="docs say reboot",
+                source_path="faq.md",
+                chunk_index=0,
+            )
+        ]
+    )
+    assistant = FakeAssistant("ok")
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=assistant,
+        mail_sender=sender,
+        document_retriever=retriever,
+    )
+
+    handle(_message())
+
+    assert retriever.calls == ["Please help"]
+    assert assistant.calls[0].rag_context is not None
+    assert "faq.md" in assistant.calls[0].rag_context
+    assert "docs say reboot" in assistant.calls[0].rag_context

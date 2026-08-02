@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_SYSTEM_PROMPT = (
     "Ты IT-консультант по технической документации компании. "
     "Отвечай кратко и по делу на русском языке. "
-    "Опирайся только на переписку пользователя и доступную документацию. "
+    "Опирайся только на переписку пользователя и фрагменты документации "
+    "в системном промпте (если они есть). "
     "Если данных недостаточно для уверенного ответа — скажи об этом прямо "
     "и предложи обратиться к администратору. "
     "Не выдумывай факты, ссылки и настройки."
@@ -55,6 +56,10 @@ def build_assistant_payload(
         payload_messages = [{"role": "user", "body": body}]
 
     prompt = (system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
+    rag_context = (message.rag_context or "").strip()
+    if rag_context:
+        prompt = f"{prompt}\n\n{rag_context}"
+
     return {
         "conversation_id": message.conversation_id,
         "system_prompt": prompt,

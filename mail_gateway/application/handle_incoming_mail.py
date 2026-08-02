@@ -1,12 +1,20 @@
 import logging
 
+from mail_gateway.application.clean_email_body import clean_email_body
+from mail_gateway.application.format_documentation import format_documentation_context
 from mail_gateway.domain.models import (
     IncomingMessage,
     Reply,
     turn_from_incoming,
     with_messages,
+    with_rag_context,
 )
-from mail_gateway.ports import Assistant, ConversationHistoryLoader, MailSender
+from mail_gateway.ports import (
+    Assistant,
+    ConversationHistoryLoader,
+    DocumentRetriever,
+    MailSender,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +27,12 @@ class HandleIncomingMail:
         assistant: Assistant,
         mail_sender: MailSender,
         history_loader: ConversationHistoryLoader | None = None,
+        document_retriever: DocumentRetriever | None = None,
     ) -> None:
         self._assistant = assistant
         self._mail_sender = mail_sender
         self._history_loader = history_loader
+        self._document_retriever = document_retriever
 
     def __call__(self, message: IncomingMessage) -> None:
         logger.info(
@@ -32,6 +42,7 @@ class HandleIncomingMail:
             message.subject,
         )
         enriched = self._with_history(message)
+        enriched = self._with_documentation(enriched)
         reply_text = self._assistant.ask(enriched)
         if reply_text is not None:
             reply_text = reply_text.strip()
@@ -77,3 +88,43 @@ class HandleIncomingMail:
             len(turns),
         )
         return with_messages(message, turns)
+
+    def _with_documentation(self, message: IncomingMessage) -> IncomingMessage:
+        if self._document_retriever is None:
+            return message
+
+        query = _retrieval_query(message)
+        if not query:
+            logger.info(
+                "Empty retrieval query conversation_id=%s; skipping RAG",
+                message.conversation_id,
+            )
+            return message
+
+        try:
+            chunks = self._document_retriever.retrieve(query)
+        except Exception:
+            logger.exception(
+                "Document retrieval failed conversation_id=%s",
+                message.conversation_id,
+            )
+            return message
+
+        context = format_documentation_context(chunks)
+        logger.info(
+            "RAG context conversation_id=%s chunks=%s chars=%s",
+            message.conversation_id,
+            len(chunks),
+            len(context),
+        )
+        return with_rag_context(message, context or None)
+
+
+def _retrieval_query(message: IncomingMessage) -> str:
+    """Prefer the latest user turn; fall back to the current message body."""
+    for turn in reversed(message.messages):
+        if turn.role == "user":
+            body = clean_email_body(turn.body) or turn.body.strip()
+            if body:
+                return body
+    return clean_email_body(message.body) or message.body.strip()

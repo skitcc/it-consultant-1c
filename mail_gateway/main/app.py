@@ -6,12 +6,14 @@ import logging
 import time
 
 from common import Settings
+from common.embeddings import OllamaEmbedder
 from common.logging_config import configure_logging
 from mail_gateway.adapters.assistant.ollama_assistant import OllamaAssistant
 from mail_gateway.adapters.ews.account import build_account
 from mail_gateway.adapters.ews.conversation_history import EwsConversationHistoryLoader
 from mail_gateway.adapters.ews.listener import EwsMailListener
 from mail_gateway.adapters.ews.sender import EwsMailSender
+from mail_gateway.adapters.rag.qdrant_retriever import QdrantRetriever
 from mail_gateway.application.handle_incoming_mail import HandleIncomingMail
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,18 @@ def run(settings: Settings | None = None) -> None:
         work_account,
         bot_email=settings.ews_email,
     )
+    embedder = OllamaEmbedder(
+        base_url=settings.ollama_base_url,
+        model=settings.embedding_model,
+        timeout_sec=settings.embedding_timeout_sec,
+    )
+    retriever = QdrantRetriever(
+        qdrant_url=settings.qdrant_url,
+        collection=settings.qdrant_collection,
+        embedder=embedder,
+        top_k=settings.rag_top_k,
+        score_threshold=settings.rag_score_threshold,
+    )
     assistant = OllamaAssistant(
         base_url=settings.ollama_base_url,
         model=settings.ollama_model,
@@ -72,13 +86,16 @@ def run(settings: Settings | None = None) -> None:
         assistant=assistant,
         mail_sender=sender,
         history_loader=history_loader,
+        document_retriever=retriever,
     )
 
     logger.info(
-        "Mail gateway started mailbox=%s ollama=%s model=%s",
+        "Mail gateway started mailbox=%s ollama=%s model=%s qdrant=%s collection=%s",
         settings.ews_email,
         settings.ollama_base_url,
         settings.ollama_model,
+        settings.qdrant_url,
+        settings.qdrant_collection,
     )
 
     while True:

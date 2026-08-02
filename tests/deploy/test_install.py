@@ -115,7 +115,7 @@ def test_full_install_venv_and_smoke_reindex(fake_root: Path, tmp_path: Path) ->
 
     # Smoke: packages importable from the installed venv.
     subprocess.run(
-        [str(venv_python), "-c", "import common, mail_gateway, reindex, watchdog"],
+        [str(venv_python), "-c", "import common, mail_gateway, reindex, watchdog, qdrant_client"],
         check=True,
         capture_output=True,
         text=True,
