@@ -95,7 +95,7 @@ tests/
 1. EWS Streaming: событие `NewMail` в Inbox.
 2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
 3. Загрузка треда, очистка тел.
-4. Embedding вопроса → поиск top_k в Qdrant → фрагменты в `system_prompt`.
+4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (+ соседние чанки) → фрагменты в `system_prompt`.
 5. `POST` в Ollama `/api/chat`.
 6. Reply через EWS в тот же тред.
 7. При обрыве streaming — reconnect.
@@ -135,8 +135,9 @@ pytest
 
 ## Контракт Ollama
 
-Шлюз подтягивает тред из Exchange, чистит тела, ищет релевантные чанки в Qdrant
-и логирует внутренний payload:
+Шлюз подтягивает тред из Exchange, чистит тела, достаёт кандидатов из Qdrant,
+переранжирует их (если доступен `/api/rerank` или `/v1/rerank`), дополняет соседними
+чанками и логирует внутренний payload:
 
 ```json
 {
@@ -168,11 +169,17 @@ pytest
 
 ```
 reindex/
+  ports.py            # DocumentReader
+  adapters/           # Text/Pdf/Docx + CompositeDocumentReader
+  documents.py        # обход файлов по суффиксу
   indexer.py          # ABC Indexer + LoggingIndexer (stub для тестов)
-  documents.py        # обход и чтение файлов
   qdrant_indexer.py   # QdrantIndexer
   watcher.py          # watchdog + DebouncedReindex
   service.py          # composition root и run loop
+mail_gateway/adapters/rag/
+  qdrant_retriever.py
+  ollama_reranker.py
+  reranking_retriever.py
 common/
   embeddings.py       # OllamaEmbedder (/api/embeddings)
   chunking.py         # разбиение текста на чанки
@@ -197,6 +204,10 @@ tests/reindex/
 | `QDRANT_URL` | HTTP API Qdrant | `http://127.0.0.1:6333` |
 | `QDRANT_COLLECTION` | Имя коллекции | `docs` |
 | `EMBEDDING_MODEL` | Модель embeddings в Ollama | `nomic-embed-text` |
+| `RAG_CANDIDATES` | Сколько кандидатов брать из Qdrant | `20` |
+| `RAG_TOP_K` | Сколько чанков оставить после rerank | `8` |
+| `RAG_NEIGHBOR_WINDOW` | Соседние chunk_index (±N) | `1` |
+| `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama-compatible API | `true` / `bge-reranker-v2-m3` |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | Размер чанка и overlap (символы) | `1200` / `150` |
 | `LOG_LEVEL` | Уровень логов | `INFO` |
 
