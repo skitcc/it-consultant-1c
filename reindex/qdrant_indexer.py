@@ -11,8 +11,10 @@ from qdrant_client.http import models as qmodels
 
 from common.chunking import chunk_text
 from common.embeddings import OllamaEmbedder
-from reindex.documents import iter_document_files, read_document_text
+from reindex.adapters.document_readers import build_default_document_reader
+from reindex.documents import iter_document_files
 from reindex.indexer import Indexer
+from reindex.ports import DocumentReader
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +32,14 @@ class QdrantIndexer(Indexer):
         embedder: OllamaEmbedder,
         chunk_size: int = 1200,
         chunk_overlap: int = 150,
+        document_reader: DocumentReader | None = None,
     ) -> None:
         self._client = QdrantClient(url=qdrant_url, check_compatibility=False)
         self._collection = collection
         self._embedder = embedder
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
+        self._document_reader = document_reader or build_default_document_reader()
 
     def reindex(self, watch_path: str) -> None:
         root = Path(watch_path)
@@ -53,7 +57,7 @@ class QdrantIndexer(Indexer):
         for path in files:
             relative = path.relative_to(root).as_posix()
             try:
-                text = read_document_text(path)
+                text = self._document_reader.read(path)
             except Exception:
                 logger.exception("Failed to read document %s", relative)
                 continue
