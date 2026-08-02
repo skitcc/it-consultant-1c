@@ -1,7 +1,7 @@
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Protocol, runtime_checkable
 
-from mail_gateway.domain.models import IncomingMessage, Reply
+from mail_gateway.domain.models import ConversationTurn, IncomingMessage, Reply
 
 
 @runtime_checkable
@@ -19,7 +19,17 @@ class MailSender(Protocol):
 
 
 @runtime_checkable
+class ConversationHistoryLoader(Protocol):
+    def load(self, conversation_id: str) -> Sequence[ConversationTurn]:
+        """Return conversation turns ordered from oldest to newest."""
+        ...
+
+
+@runtime_checkable
 class Assistant(Protocol):
     def ask(self, message: IncomingMessage) -> str | None:
-        """Return answer text, or None when no relevant answer exists."""
+        """Return answer text, or None when no relevant answer exists.
+
+        ``message.messages`` holds the full thread to send to the model.
+        """
         ...
