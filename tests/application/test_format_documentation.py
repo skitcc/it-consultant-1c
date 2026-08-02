@@ -13,7 +13,7 @@ def test_format_documentation_context_lists_sources() -> None:
     ]
     rendered = format_documentation_context(chunks)
     assert "Релевантные фрагменты документации:" in rendered
-    assert "[1] source=a.md" in rendered
+    assert "[1] source=a.md chunk=0 score=0.9000" in rendered
     assert "first chunk" in rendered
-    assert "[2] source=b.txt" in rendered
+    assert "[2] source=b.txt chunk=1" in rendered
     assert "second chunk" in rendered

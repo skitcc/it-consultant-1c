@@ -33,6 +33,17 @@ class DocumentRetriever(Protocol):
 
 
 @runtime_checkable
+class Reranker(Protocol):
+    def rerank(
+        self,
+        query: str,
+        chunks: Sequence[DocumentChunk],
+    ) -> Sequence[DocumentChunk]:
+        """Return ``chunks`` ordered by relevance to ``query`` (best first)."""
+        ...
+
+
+@runtime_checkable
 class Assistant(Protocol):
     def ask(self, message: IncomingMessage) -> str | None:
         """Return answer text, or None when no relevant answer exists.

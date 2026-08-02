@@ -30,7 +30,7 @@ def test_qdrant_retriever_maps_hits() -> None:
         qdrant_url="http://127.0.0.1:6333",
         collection="docs",
         embedder=FakeEmbedder(),  # type: ignore[arg-type]
-        top_k=3,
+        limit=20,
         score_threshold=0.2,
     )
     retriever._client = client
@@ -47,7 +47,7 @@ def test_qdrant_retriever_maps_hits() -> None:
     ]
     client.query_points.assert_called_once()
     kwargs = client.query_points.call_args.kwargs
-    assert kwargs["limit"] == 3
+    assert kwargs["limit"] == 20
     assert kwargs["score_threshold"] == 0.2
     assert kwargs["query"] == [0.1, 0.2]
 
@@ -59,3 +59,31 @@ def test_qdrant_retriever_empty_query() -> None:
         embedder=MagicMock(spec=OllamaEmbedder),
     )
     assert retriever.retrieve("   ") == []
+
+
+def test_qdrant_load_neighbors() -> None:
+    point = MagicMock()
+    point.payload = {
+        "text": "neighbor",
+        "source_path": "faq.md",
+        "chunk_index": 1,
+    }
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    client.scroll.return_value = ([point], None)
+
+    retriever = QdrantRetriever(
+        qdrant_url="http://127.0.0.1:6333",
+        collection="docs",
+        embedder=MagicMock(spec=OllamaEmbedder),
+    )
+    retriever._client = client
+
+    seeds = [
+        DocumentChunk(text="seed", source_path="faq.md", chunk_index=1, score=0.5)
+    ]
+    loaded = retriever.load_neighbors(seeds, window=1)
+    assert loaded == [
+        DocumentChunk(text="neighbor", source_path="faq.md", chunk_index=1, score=None)
+    ]
+    client.scroll.assert_called_once()

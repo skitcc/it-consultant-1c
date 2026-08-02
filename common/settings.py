@@ -49,11 +49,17 @@ class Settings(BaseSettings):
         default=120.0,
         alias="EMBEDDING_TIMEOUT_SEC",
     )
-    rag_top_k: int = Field(default=5, alias="RAG_TOP_K")
+    rag_top_k: int = Field(default=8, alias="RAG_TOP_K")
+    rag_candidates: int = Field(default=20, alias="RAG_CANDIDATES")
     rag_score_threshold: float | None = Field(
         default=None,
         alias="RAG_SCORE_THRESHOLD",
     )
+    rag_neighbor_window: int = Field(default=1, alias="RAG_NEIGHBOR_WINDOW")
+    rerank_enabled: bool = Field(default=True, alias="RERANK_ENABLED")
+    rerank_model: str = Field(default="bge-reranker-v2-m3", alias="RERANK_MODEL")
+    rerank_base_url: str | None = Field(default=None, alias="RERANK_BASE_URL")
+    rerank_timeout_sec: float = Field(default=60.0, alias="RERANK_TIMEOUT_SEC")
     chunk_size: int = Field(default=1200, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=150, alias="CHUNK_OVERLAP")
 
