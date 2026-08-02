@@ -7,7 +7,7 @@
 | Пакет | Назначение |
 |-------|------------|
 | `common` | Общие настройки (`Settings`) и утилиты |
-| `mail_gateway` | Exchange (EWS Streaming) → ИИ-сервис → reply в тот же conversation |
+| `mail_gateway` | Exchange (EWS Streaming) → Ollama → reply в тот же conversation |
 | `reindex` | Следит за каталогом файловой БД и при изменениях запускает реиндексацию |
 
 Общий конфиг — один класс [`common.Settings`](common/settings.py), читается из `.env` / переменных окружения. Оба сервиса используют одни и те же переменные.
@@ -72,7 +72,7 @@ pytest tests/deploy -q -m slow  # полный install + smoke `python -m reinde
 
 # Mail Gateway
 
-Почтовый шлюз: Exchange (EWS Streaming) → ИИ-сервис → reply в тот же conversation.
+Почтовый шлюз: Exchange (EWS Streaming) → Ollama (`/api/chat`) → reply в тот же conversation.
 
 ## Структура
 
@@ -82,7 +82,7 @@ mail_gateway/
   domain/       # модели (IncomingMessage, Reply)
   ports/        # контракты MailListener, MailSender, Assistant
   application/  # сценарий HandleIncomingMail
-  adapters/     # реализации портов (EWS, HTTP/Stub ИИ)
+  adapters/     # реализации портов (EWS, Ollama)
   main/         # composition root
 tests/
 ```
@@ -94,7 +94,7 @@ tests/
 
 1. EWS Streaming: событие `NewMail` в Inbox.
 2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
-3. HTTP POST в ИИ (или stub).
+3. Загрузка треда, очистка тел, `POST` в Ollama `/api/chat`.
 4. Reply через EWS в тот же тред.
 5. При обрыве streaming — reconnect.
 
@@ -110,42 +110,40 @@ pytest
 
 Проверяют сценарий «письмо → ИИ → reply» на фейковых портах.
 
-### 2. Round-trip с реальным ящиком (stub ИИ)
+### 2. Round-trip с реальным ящиком + Ollama
 
-1. В `.env`:
-   - `ASSISTANT_MODE=stub`
-   - рабочие `EWS_SERVER`, `EWS_EMAIL`, `EWS_PASSWORD`
-2. Запуск:
+1. Подними модель:
+   ```bash
+   docker compose up -d ollama
+   ```
+2. В `.env`:
+   - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
+   - `OLLAMA_MODEL=llama3.2`
+   - рабочие `EWS_*`
+3. Запуск:
    ```bash
    python -m mail_gateway
    ```
-3. Напишите письмо на ящик бота (или reply в существующий тред).
-4. В логах должны появиться `New mail ...` и `Reply sent ...`.
-5. В Outlook должен прийти stub-ответ с `conversation_id`.
+4. Напишите письмо на ящик бота. В логах будет `Assistant payload` (с `system_prompt`) и ответ модели.
 
-### 3. С HTTP-заглушкой ИИ
+## Контракт Ollama
 
-Поднимите любой mock, который отвечает `{ "reply": "тест" }` на `POST /v1/ask`, затем:
-
-```env
-ASSISTANT_MODE=http
-AI_SERVICE_URL=http://127.0.0.1:8000/v1/ask
-```
-
-## Контракт ИИ
-
-`POST` на `AI_SERVICE_URL`:
+Шлюз подтягивает тред из Exchange, чистит тела и логирует внутренний payload:
 
 ```json
 {
   "conversation_id": "...",
-  "from": "user@company.ru",
-  "subject": "...",
-  "body": "..."
+  "system_prompt": "Ты IT-консультант...",
+  "messages": [
+    {"role": "user", "body": "test"},
+    {"role": "assistant", "body": "ответ"},
+    {"role": "user", "body": "уточнение"}
+  ]
 }
 ```
 
-Ответ: `{ "reply": "текст" }` или `{ "reply": null }` → текст про администратора.
+В Ollama уходит `POST /api/chat` с `messages`: `system` + история `user`/`assistant`
+(`body` → `content`). Системный промпт можно переопределить через `AI_SYSTEM_PROMPT`.
 
 ---
 
