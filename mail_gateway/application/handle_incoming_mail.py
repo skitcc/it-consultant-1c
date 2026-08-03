@@ -21,6 +21,16 @@ logger = logging.getLogger(__name__)
 ADMIN_FALLBACK_TEXT = "Обратитесь с этим вопросом к администратору."
 
 
+def _normalize_email(address: str) -> str:
+    cleaned = (address or "").strip().lower()
+    if "<" in cleaned and ">" in cleaned:
+        start = cleaned.rfind("<")
+        end = cleaned.rfind(">")
+        if start < end:
+            cleaned = cleaned[start + 1 : end].strip()
+    return cleaned
+
+
 class HandleIncomingMail:
     def __init__(
         self,
@@ -28,11 +38,13 @@ class HandleIncomingMail:
         mail_sender: MailSender,
         history_loader: ConversationHistoryLoader | None = None,
         document_retriever: DocumentRetriever | None = None,
+        bot_email: str | None = None,
     ) -> None:
         self._assistant = assistant
         self._mail_sender = mail_sender
         self._history_loader = history_loader
         self._document_retriever = document_retriever
+        self._bot_email = _normalize_email(bot_email or "")
 
     def __call__(self, message: IncomingMessage) -> None:
         logger.info(
@@ -41,6 +53,15 @@ class HandleIncomingMail:
             message.from_address,
             message.subject,
         )
+        sender = _normalize_email(message.from_address)
+        if self._bot_email and sender == self._bot_email:
+            logger.info(
+                "Ignoring own bot message conversation_id=%s from=%s",
+                message.conversation_id,
+                message.from_address,
+            )
+            return
+
         enriched = self._with_history(message)
         enriched = self._with_documentation(enriched)
         reply_text = self._assistant.ask(enriched)

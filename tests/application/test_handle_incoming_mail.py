@@ -149,3 +149,27 @@ def test_attaches_rag_context_from_retriever() -> None:
     assert assistant.calls[0].rag_context is not None
     assert "faq.md" in assistant.calls[0].rag_context
     assert "docs say reboot" in assistant.calls[0].rag_context
+
+
+def test_ignores_own_bot_email_silently() -> None:
+    assistant = FakeAssistant("should not run")
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=assistant,
+        mail_sender=sender,
+        bot_email="Assistant@1c-perspective.ru",
+    )
+
+    handle(
+        IncomingMessage(
+            conversation_id="conv-own",
+            item_id="item-own",
+            change_key="ck",
+            from_address="assistant@1c-perspective.ru",
+            subject="Re: loop?",
+            body="bot talking to itself",
+        )
+    )
+
+    assert assistant.calls == []
+    assert sender.sent == []

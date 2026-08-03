@@ -102,6 +102,7 @@ def run(settings: Settings | None = None) -> None:
         connection_timeout_minutes=settings.ews_streaming_timeout_minutes,
         ignore_own_mail=settings.ews_ignore_own_mail,
         catchup_minutes=settings.ews_catchup_minutes,
+        own_addresses={settings.ews_email},
     )
     sender = EwsMailSender(work_account)
     history_loader = EwsConversationHistoryLoader(
@@ -120,6 +121,7 @@ def run(settings: Settings | None = None) -> None:
         mail_sender=sender,
         history_loader=history_loader,
         document_retriever=retriever,
+        bot_email=settings.ews_email,
     )
 
     logger.info(

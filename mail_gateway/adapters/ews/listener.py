@@ -28,6 +28,7 @@ class EwsMailListener(MailListener):
         connection_timeout_minutes: int = 30,
         ignore_own_mail: bool = True,
         catchup_minutes: int = 30,
+        own_addresses: set[str] | frozenset[str] | None = None,
     ) -> None:
         # Separate accounts: streaming holds a long-lived HTTP connection;
         # fetch/reply must use another session or get() hangs inside the loop.
@@ -37,6 +38,11 @@ class EwsMailListener(MailListener):
         self._ignore_own_mail = ignore_own_mail
         self._catchup_minutes = catchup_minutes
         self._seen_item_ids: set[str] = set()
+        extras = {addr.strip().lower() for addr in (own_addresses or set()) if addr.strip()}
+        primary = (fetch_account.primary_smtp_address or "").strip().lower()
+        if primary:
+            extras.add(primary)
+        self._own_addresses = frozenset(extras)
 
     def listen(self) -> Iterator[IncomingMessage]:
         logger.info(
@@ -189,16 +195,17 @@ class EwsMailListener(MailListener):
             logger.info("Skipping already handled item_id=%s", item_id)
             return
 
-        own = self._fetch_account.primary_smtp_address.lower()
         sender = ""
         if item.sender and item.sender.email_address:
-            sender = item.sender.email_address.lower()
+            sender = item.sender.email_address.strip().lower()
+        elif item.author and item.author.email_address:
+            sender = item.author.email_address.strip().lower()
 
-        if self._ignore_own_mail and sender == own:
-            logger.warning(
-                "Skipping mail from our own mailbox (%s). "
-                "Send the test from ANOTHER address, or set EWS_IGNORE_OWN_MAIL=false",
-                own,
+        if self._ignore_own_mail and sender and sender in self._own_addresses:
+            logger.info(
+                "Skipping own mailbox mail from=%s own_addresses=%s",
+                sender,
+                sorted(self._own_addresses),
             )
             self._seen_item_ids.add(item_id)
             return
