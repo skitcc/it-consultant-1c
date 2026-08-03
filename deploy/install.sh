@@ -2,11 +2,10 @@
 # Install IT Consultant services into a filesystem tree.
 #
 # Production (needs root):
-#   sudo ./deploy/install.sh
 #   sudo ./deploy/install.sh --enable
+# Then edit the docs mount What= / credentials and restart the mount unit.
 #
 # Safe fake-root (no systemd, no user creation, does not touch host /):
-#   ./deploy/install.sh --dest-dir /tmp/itc-root
 #   ./deploy/install.sh --dest-dir /tmp/itc-root --layout-only
 #
 # Environment:
@@ -19,8 +18,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OPT_DIR="/opt/it-consultant"
 ETC_DIR="/etc/it-consultant"
 VAR_DIR="/var/lib/it-consultant"
+DOCS_DIR="${VAR_DIR}/db"
 SERVICE_USER="it-consultant"
 SERVICE_GROUP="it-consultant"
+# systemd-escape -p --suffix=mount /var/lib/it-consultant/db
+DOCS_MOUNT_UNIT='var-lib-it\x2dconsultant-db.mount'
 
 DEST_DIR="${DESTDIR:-}"
 LAYOUT_ONLY=0
@@ -36,16 +38,17 @@ Options:
   --dest-dir DIR   Install under DIR as fake root (sets DESTDIR). Skips
                    systemctl and useradd. Safe for local/CI tests.
   --layout-only    Create dirs, .env, systemd units only (no venv/pip).
-  --enable         systemctl daemon-reload && enable --now it-consultant.target
+  --enable         systemctl daemon-reload && enable mount + it-consultant.target
                    (ignored when --dest-dir is set).
   --no-create-user Do not create service user/group (real install only).
   -h, --help       Show this help.
 
 Paths (always absolute on the target system; prefixed by --dest-dir when set):
-  /opt/it-consultant       application + .venv
-  /etc/it-consultant/.env  secrets / settings
-  /var/lib/it-consultant/db  WATCH_PATH data
-  /etc/systemd/system/     unit files
+  /opt/it-consultant                 application + .venv
+  /etc/it-consultant/.env            secrets / settings
+  /etc/it-consultant/docs-credentials  CIFS credentials for docs.mount
+  /var/lib/it-consultant/db          documents mount point (WATCH_PATH)
+  /etc/systemd/system/               unit files (+ docs .mount)
 EOF
 }
 
@@ -122,27 +125,40 @@ install_layout() {
   log "creating directories under ${DEST_DIR:-/}"
   mkdir -p "$(root "${OPT_DIR}")"
   mkdir -p "$(root "${ETC_DIR}")"
-  mkdir -p "$(root "${VAR_DIR}/db")"
+  mkdir -p "$(root "${DOCS_DIR}")"
   mkdir -p "$(root /etc/systemd/system)"
 
   local env_dst
   env_dst="$(root "${ETC_DIR}/.env")"
   if [[ ! -f "${env_dst}" ]]; then
     log "writing ${ETC_DIR}/.env from .env.example"
-    # Force WATCH_PATH to the standard data dir in the installed tree.
-    sed "s|^WATCH_PATH=.*|WATCH_PATH=${VAR_DIR}/db|" \
+    sed "s|^WATCH_PATH=.*|WATCH_PATH=${DOCS_DIR}|" \
       "${REPO_ROOT}/.env.example" >"${env_dst}"
     chmod 600 "${env_dst}"
   else
     log "keeping existing ${ETC_DIR}/.env"
   fi
 
-  log "installing systemd units"
+  local creds_dst
+  creds_dst="$(root "${ETC_DIR}/docs-credentials")"
+  if [[ ! -f "${creds_dst}" ]]; then
+    log "writing ${ETC_DIR}/docs-credentials from example (edit username/password)"
+    install -m 600 \
+      "${REPO_ROOT}/deploy/systemd/docs-credentials.example" \
+      "${creds_dst}"
+  else
+    log "keeping existing ${ETC_DIR}/docs-credentials"
+  fi
+
+  log "installing systemd units (services + docs mount)"
   install -m 644 \
     "${REPO_ROOT}/deploy/systemd/mail-gateway.service" \
     "${REPO_ROOT}/deploy/systemd/reindex.service" \
     "${REPO_ROOT}/deploy/systemd/it-consultant.target" \
     "$(root /etc/systemd/system)/"
+  install -m 644 \
+    "${REPO_ROOT}/deploy/systemd/docs.mount" \
+    "$(root /etc/systemd/system)/${DOCS_MOUNT_UNIT}"
 }
 
 install_venv() {
@@ -184,7 +200,11 @@ enable_systemd() {
     return 0
   fi
   if [[ "${ENABLE}" -ne 1 ]]; then
-    log "units installed; enable later with: systemctl enable --now it-consultant.target"
+    log "units installed; next:"
+    log "  1) edit What= in /etc/systemd/system/${DOCS_MOUNT_UNIT}"
+    log "  2) edit /etc/it-consultant/docs-credentials"
+    log "  3) systemctl daemon-reload"
+    log "  4) systemctl enable --now '${DOCS_MOUNT_UNIT}' it-consultant.target"
     return 0
   fi
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -192,8 +212,19 @@ enable_systemd() {
     exit 1
   fi
   require_cmd systemctl
-  log "daemon-reload and enable --now it-consultant.target"
+  log "daemon-reload"
   systemctl daemon-reload
+
+  log "enable docs mount unit (${DOCS_MOUNT_UNIT})"
+  systemctl enable "${DOCS_MOUNT_UNIT}"
+  # Start may fail until What=/credentials are fixed — that is expected right after deploy.
+  if systemctl start "${DOCS_MOUNT_UNIT}"; then
+    log "docs mount started OK"
+  else
+    log "WARN: docs mount failed to start (edit What= / docs-credentials, then restart the mount)"
+  fi
+
+  log "enable --now it-consultant.target"
   systemctl enable --now it-consultant.target
 }
 
@@ -220,10 +251,14 @@ main() {
   enable_systemd
 
   log "done"
-  log "  app:   ${DEST_DIR}${OPT_DIR}"
-  log "  env:   ${DEST_DIR}${ETC_DIR}/.env"
-  log "  data:  ${DEST_DIR}${VAR_DIR}/db"
-  log "  units: ${DEST_DIR}/etc/systemd/system/"
+  log "  app:     ${DEST_DIR}${OPT_DIR}"
+  log "  env:     ${DEST_DIR}${ETC_DIR}/.env"
+  log "  creds:   ${DEST_DIR}${ETC_DIR}/docs-credentials"
+  log "  docs:    ${DEST_DIR}${DOCS_DIR}  (WATCH_PATH / mount Where=)"
+  log "  mount:   ${DEST_DIR}/etc/systemd/system/${DOCS_MOUNT_UNIT}"
+  log "  units:   ${DEST_DIR}/etc/systemd/system/"
+  log "After deploy: set What= in the mount unit + docs-credentials, then:"
+  log "  systemctl daemon-reload && systemctl restart '${DOCS_MOUNT_UNIT}' reindex"
 }
 
 main
