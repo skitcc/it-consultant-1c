@@ -69,6 +69,10 @@ class Settings(BaseSettings):
         alias="WATCH_PATH",
     )
     debounce_seconds: float = Field(default=1.0, alias="DEBOUNCE_SECONDS")
+    index_extensions: str = Field(
+        default=".txt,.md,.markdown,.rst,.log,.csv,.pdf,.docx",
+        alias="INDEX_EXTENSIONS",
+    )
 
     # --- shared ---
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

@@ -41,6 +41,32 @@ def test_qdrant_indexer_indexes_markdown(tmp_path: Path) -> None:
     assert "обмен" in points[0].payload["text"]
 
 
+def test_qdrant_indexer_skips_disallowed_extensions(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("markdown text " * 10, encoding="utf-8")
+    (docs / "notes.txt").write_text("plain text " * 10, encoding="utf-8")
+
+    client = MagicMock()
+    client.collection_exists.return_value = False
+
+    indexer = QdrantIndexer(
+        qdrant_url="http://127.0.0.1:6333",
+        collection="docs",
+        embedder=FakeEmbedder(),  # type: ignore[arg-type]
+        chunk_size=40,
+        chunk_overlap=5,
+        allowed_extensions=frozenset({".md"}),
+    )
+    indexer._client = client
+
+    indexer.reindex(str(docs))
+
+    points = client.upsert.call_args.kwargs["points"]
+    sources = {point.payload["source_path"] for point in points}
+    assert sources == {"guide.md"}
+
+
 def test_ollama_embedder_posts_prompt(monkeypatch) -> None:
     captured: dict = {}
 

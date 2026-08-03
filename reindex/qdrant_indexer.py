@@ -33,6 +33,7 @@ class QdrantIndexer(Indexer):
         chunk_size: int = 1200,
         chunk_overlap: int = 150,
         document_reader: DocumentReader | None = None,
+        allowed_extensions: frozenset[str] | set[str] | None = None,
     ) -> None:
         self._client = QdrantClient(url=qdrant_url, check_compatibility=False)
         self._collection = collection
@@ -40,15 +41,20 @@ class QdrantIndexer(Indexer):
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
         self._document_reader = document_reader or build_default_document_reader()
+        self._allowed_extensions = frozenset(allowed_extensions or ())
 
     def reindex(self, watch_path: str) -> None:
         root = Path(watch_path)
-        files = iter_document_files(root)
+        files = iter_document_files(
+            root,
+            allowed_extensions=self._allowed_extensions or None,
+        )
         logger.info(
-            "Qdrant reindex start path=%s files=%s collection=%s",
+            "Qdrant reindex start path=%s files=%s collection=%s extensions=%s",
             watch_path,
             len(files),
             self._collection,
+            sorted(self._allowed_extensions) if self._allowed_extensions else ["*"],
         )
 
         points: list[qmodels.PointStruct] = []

@@ -10,6 +10,7 @@ from pathlib import Path
 from common import Settings
 from common.embeddings import OllamaEmbedder
 from common.logging_config import configure_logging
+from reindex.documents import parse_index_extensions, resolve_index_extensions
 from reindex.indexer import Indexer
 from reindex.qdrant_indexer import QdrantIndexer
 from reindex.watcher import ChangeHandler, DebouncedReindex, create_observer
@@ -18,6 +19,15 @@ logger = logging.getLogger(__name__)
 
 
 def build_indexer(settings: Settings) -> Indexer:
+    configured = parse_index_extensions(settings.index_extensions)
+    allowed = resolve_index_extensions(settings.index_extensions)
+    unknown = configured - allowed
+    if unknown:
+        logger.warning(
+            "INDEX_EXTENSIONS has unsupported types (no reader): %s",
+            sorted(unknown),
+        )
+    logger.info("Index extensions enabled: %s", sorted(allowed))
     embedder = OllamaEmbedder(
         base_url=settings.ollama_base_url,
         model=settings.embedding_model,
@@ -29,6 +39,7 @@ def build_indexer(settings: Settings) -> Indexer:
         embedder=embedder,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        allowed_extensions=allowed,
     )
 
 
@@ -70,11 +81,12 @@ def run(
     signal.signal(signal.SIGINT, _shutdown)
 
     logger.info(
-        "Starting reindex watcher on %s (debounce=%ss qdrant=%s collection=%s)",
+        "Starting reindex watcher on %s (debounce=%ss qdrant=%s collection=%s extensions=%s)",
         watch,
         cfg.debounce_seconds,
         cfg.qdrant_url,
         cfg.qdrant_collection,
+        sorted(resolve_index_extensions(cfg.index_extensions)),
     )
     # Initial full index so cold start has vectors without waiting for FS events.
     try:
