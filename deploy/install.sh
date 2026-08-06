@@ -324,8 +324,6 @@ install_venv() {
     fi
   fi
   log "installing Python package into venv (mail_gateway + reindex + common)"
-  "${venv_dir}/bin/pip" install --upgrade pip
-  "${venv_dir}/bin/pip" install "${REPO_ROOT}[reindex]"
 }
 
 fix_ownership() {
