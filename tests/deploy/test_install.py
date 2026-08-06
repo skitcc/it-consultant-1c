@@ -50,10 +50,6 @@ def test_layout_only_install_creates_expected_tree(fake_root: Path) -> None:
     assert (units / "reindex.service").is_file()
     assert (units / "mail-gateway.service").is_file()
     assert (units / "it-consultant.target").is_file()
-    assert (units / r"var-lib-it\x2dconsultant-db.mount").is_file()
-    creds = fake_root / "etc" / "it-consultant" / "docs-credentials"
-    assert creds.is_file()
-    assert "username=" in creds.read_text(encoding="utf-8")
 
     # Must not create a real host venv path or touch /etc outside fake root.
     assert not (fake_root / "opt" / "it-consultant" / ".venv").exists()
@@ -74,14 +70,6 @@ def test_unit_files_point_at_venv_and_etc(fake_root: Path) -> None:
     assert "ExecStart=/opt/it-consultant/.venv/bin/python -m reindex" in reindex
     assert "EnvironmentFile=-/etc/it-consultant/.env" in reindex
     assert "User=it-consultant" in reindex
-    assert "RequiresMountsFor=/var/lib/it-consultant/db" in reindex
-
-    mount = (
-        fake_root / "etc" / "systemd" / "system" / r"var-lib-it\x2dconsultant-db.mount"
-    ).read_text(encoding="utf-8")
-    assert "Where=/var/lib/it-consultant/db" in mount
-    assert "What=" in mount
-    assert "Type=cifs" in mount
 
     assert "ExecStart=/opt/it-consultant/.venv/bin/python -m mail_gateway" in mail
     assert "Also=mail-gateway.service reindex.service" in target

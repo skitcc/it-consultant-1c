@@ -1,9 +1,8 @@
 [Unit]
 Description=IT Consultant file-based DB reindex service
 Documentation=file:///opt/it-consultant
-After=network-online.target var-lib-it\x2dconsultant-db.mount
-Wants=network-online.target var-lib-it\x2dconsultant-db.mount
-RequiresMountsFor=/var/lib/it-consultant/db
+After=network-online.target
+Wants=network-online.target
 PartOf=it-consultant.target
 
 [Service]
@@ -18,6 +17,9 @@ RestartSec=5
 
 NoNewPrivileges=true
 PrivateTmp=true
+
+# Allow reading/writing the watched DB directory
+ReadWritePaths=/var/lib/it-consultant
 
 [Install]
 WantedBy=it-consultant.target

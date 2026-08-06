@@ -27,32 +27,26 @@ cp .env.example .env
 
 ## Установка на сервер (systemd)
 
-```bash
-sudo ./deploy/install.sh --enable
-```
-
-Скрипт ставит сервисы **и** unit монтирования сетевой папки в `/var/lib/it-consultant/db`.
-
-После деплоя поправь источник шары (placeholder в unit) и логин:
-
-```bash
-sudo nano /etc/systemd/system/var-lib-it\\x2dconsultant-db.mount   # поле What=
-sudo nano /etc/it-consultant/docs-credentials                      # username/password
-sudo systemctl daemon-reload
-sudo systemctl restart 'var-lib-it\x2dconsultant-db.mount'
-sudo systemctl restart reindex
-```
-
-`WATCH_PATH` в `.env` остаётся `/var/lib/it-consultant/db` — менять не нужно.
+Скрипт [`deploy/install.sh`](deploy/install.sh) раскладывает дерево:
 
 | Путь | Содержимое |
 |------|------------|
 | `/opt/it-consultant/.venv` | Python-окружение и пакеты |
-| `/etc/it-consultant/.env` | секреты и настройки |
-| `/etc/it-consultant/docs-credentials` | логин к CIFS-шаре |
-| `/var/lib/it-consultant/db` | точка монтирования документов (`WATCH_PATH`) |
-| `/etc/systemd/system/*.service` | mail-gateway, reindex, target |
-| `var-lib-it\x2dconsultant-db.mount` | mount сетевой папки → `db` |
+| `/etc/it-consultant/.env` | секреты и настройки (из `.env.example`) |
+| `/var/lib/it-consultant/db` | каталог файловой БД (`WATCH_PATH`) |
+| `/etc/systemd/system/*.service` | unit-файлы + `it-consultant.target` |
+
+```bash
+# боевая установка (нужен root; создаёт user it-consultant и venv)
+sudo ./deploy/install.sh --enable
+
+# только разложить файлы, без enable:
+sudo ./deploy/install.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now it-consultant.target
+```
+
+`enable it-consultant.target` создаёт symlink’и в `multi-user.target.wants` и (через `Also=`) подтягивает `mail-gateway` и `reindex`.
 
 ### Безопасная проверка без трогания host rootfs
 
