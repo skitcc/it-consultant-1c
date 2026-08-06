@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Install IT Consultant services into a filesystem tree.
+# Install / undeploy IT Consultant services into a filesystem tree.
 #
 # Production (needs root):
 #   sudo ./deploy/install.sh
 #   sudo ./deploy/install.sh --enable
+#   sudo ./deploy/install.sh --undeploy
 #
 # Safe fake-root (no systemd, no user creation, does not touch host /):
 #   ./deploy/install.sh --dest-dir /tmp/itc-root
 #   ./deploy/install.sh --dest-dir /tmp/itc-root --layout-only
+#   ./deploy/install.sh --dest-dir /tmp/itc-root --undeploy
 #
 # Environment:
 #   DESTDIR  — same as --dest-dir (packaging convention)
@@ -21,11 +23,17 @@ ETC_DIR="/etc/it-consultant"
 VAR_DIR="/var/lib/it-consultant"
 SERVICE_USER="it-consultant"
 SERVICE_GROUP="it-consultant"
+UNITS=(
+  mail-gateway.service
+  reindex.service
+  it-consultant.target
+)
 
 DEST_DIR="${DESTDIR:-}"
 LAYOUT_ONLY=0
 ENABLE=0
 CREATE_USER=1
+UNDEPLOY=0
 PYTHON="${PYTHON:-python3}"
 
 usage() {
@@ -33,11 +41,13 @@ usage() {
 Usage: deploy/install.sh [options]
 
 Options:
-  --dest-dir DIR   Install under DIR as fake root (sets DESTDIR). Skips
-                   systemctl and useradd. Safe for local/CI tests.
+  --dest-dir DIR   Install/undeploy under DIR as fake root (sets DESTDIR).
+                   Skips systemctl and useradd/userdel. Safe for local/CI tests.
   --layout-only    Create dirs, .env, systemd units only (no venv/pip).
   --enable         systemctl daemon-reload && enable --now it-consultant.target
                    (ignored when --dest-dir is set).
+  --undeploy       Stop/disable units, remove app/env/data/units and service
+                   user (production). With --dest-dir only removes the fake tree.
   --no-create-user Do not create service user/group (real install only).
   -h, --help       Show this help.
 
@@ -61,6 +71,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --enable)
       ENABLE=1
+      shift
+      ;;
+    --undeploy)
+      UNDEPLOY=1
       shift
       ;;
     --no-create-user)
@@ -137,6 +151,7 @@ install_layout() {
     log "keeping existing ${ETC_DIR}/.env"
   fi
 
+
   log "installing systemd units"
   install -m 644 \
     "${REPO_ROOT}/deploy/systemd/mail-gateway.service" \
@@ -197,7 +212,101 @@ enable_systemd() {
   systemctl enable --now it-consultant.target
 }
 
+stop_systemd() {
+  if is_fake_root; then
+    log "skipping systemctl (fake root / DESTDIR)"
+    return 0
+  fi
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "install: --undeploy requires root on a real system" >&2
+    exit 1
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    log "systemctl not found; skipping stop/disable"
+    return 0
+  fi
+  log "disable --now it-consultant.target (and related units)"
+  systemctl disable --now it-consultant.target 2>/dev/null || true
+  local unit
+  for unit in "${UNITS[@]}"; do
+    systemctl disable --now "${unit}" 2>/dev/null || true
+  done
+  systemctl daemon-reload || true
+  systemctl reset-failed 2>/dev/null || true
+}
+
+remove_paths() {
+  local path
+  for path in \
+    "$(root "${OPT_DIR}")" \
+    "$(root "${ETC_DIR}")" \
+    "$(root "${VAR_DIR}")"
+  do
+    if [[ -e "${path}" ]]; then
+      log "removing ${path#"${DEST_DIR}"}"
+      rm -rf "${path}"
+    fi
+  done
+
+  local unit unit_path
+  for unit in "${UNITS[@]}"; do
+    unit_path="$(root "/etc/systemd/system/${unit}")"
+    if [[ -e "${unit_path}" || -L "${unit_path}" ]]; then
+      log "removing /etc/systemd/system/${unit}"
+      rm -f "${unit_path}"
+    fi
+  done
+}
+
+remove_service_user() {
+  if is_fake_root; then
+    return 0
+  fi
+  if [[ "$(id -u)" -ne 0 ]]; then
+    return 0
+  fi
+  if getent passwd "${SERVICE_USER}" >/dev/null; then
+    log "removing user ${SERVICE_USER}"
+    userdel "${SERVICE_USER}" 2>/dev/null || true
+  fi
+  if getent group "${SERVICE_GROUP}" >/dev/null; then
+    log "removing group ${SERVICE_GROUP}"
+    groupdel "${SERVICE_GROUP}" 2>/dev/null || true
+  fi
+}
+
+undeploy() {
+  if is_fake_root; then
+    log "fake-root undeploy DESTDIR=${DEST_DIR}"
+    if [[ ! -d "${DEST_DIR}" ]]; then
+      log "nothing to remove (${DEST_DIR} missing)"
+      return 0
+    fi
+    DEST_DIR="$(cd "${DEST_DIR}" && pwd)"
+  elif [[ "$(id -u)" -ne 0 ]]; then
+    echo "install: production undeploy requires root, or use --dest-dir for a test root" >&2
+    exit 1
+  else
+    log "production undeploy"
+  fi
+
+  stop_systemd
+  remove_paths
+  remove_service_user
+
+  if ! is_fake_root && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+  fi
+
+  log "undeploy done"
+}
+
 main() {
+  if [[ "${UNDEPLOY}" -eq 1 ]]; then
+    undeploy
+    return 0
+  fi
+
   if is_fake_root; then
     log "fake-root install DESTDIR=${DEST_DIR}"
     mkdir -p "${DEST_DIR}"

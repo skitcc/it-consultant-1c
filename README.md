@@ -44,9 +44,14 @@ sudo ./deploy/install.sh --enable
 sudo ./deploy/install.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now it-consultant.target
+
+# снять установку (stop/disable units, удалить app/env/data/units и user)
+sudo ./deploy/install.sh --undeploy
 ```
 
 `enable it-consultant.target` создаёт symlink’и в `multi-user.target.wants` и (через `Also=`) подтягивает `mail-gateway` и `reindex`.
+
+`--undeploy` останавливает и отключает `it-consultant.target` (и связанные unit’ы), удаляет `/opt/it-consultant`, `/etc/it-consultant`, `/var/lib/it-consultant`, unit-файлы из `/etc/systemd/system/` и системного пользователя/группу `it-consultant`.
 
 ### Безопасная проверка без трогания host rootfs
 
@@ -57,12 +62,14 @@ sudo systemctl enable --now it-consultant.target
 # дерево только под /tmp/itc-root/... ; systemctl и useradd не вызываются
 
 ./deploy/install.sh --dest-dir /tmp/itc-root   # + venv/pip внутрь /tmp/...
+
+./deploy/install.sh --dest-dir /tmp/itc-root --undeploy  # снять только фейковое дерево
 ```
 
 Автотесты (тоже через `--dest-dir` во временный каталог):
 
 ```bash
-pytest tests/deploy -q          # layout, содержимое unit-файлов
+pytest tests/deploy -q          # layout, undeploy, содержимое unit-файлов
 pytest tests/deploy -q -m slow  # полный install + smoke `python -m reindex` (нужен python3-venv)
 ```
 
@@ -183,7 +190,7 @@ mail_gateway/adapters/rag/
 common/
   embeddings.py       # OllamaEmbedder (/api/embeddings)
   chunking.py         # разбиение текста на чанки
-deploy/               # install.sh + systemd units
+deploy/               # install.sh (--enable / --undeploy) + systemd units
 tests/reindex/
 ```
 
@@ -236,4 +243,4 @@ pytest tests/reindex tests/common tests/deploy
 
 ## systemd
 
-Unit-файлы: [`deploy/systemd/`](deploy/systemd/). Установка — через [`deploy/install.sh`](deploy/install.sh) (см. раздел «Установка на сервер» выше).
+Unit-файлы: [`deploy/systemd/`](deploy/systemd/). Установка и снятие — через [`deploy/install.sh`](deploy/install.sh) (`--enable` / `--undeploy`, см. раздел «Установка на сервер» выше).

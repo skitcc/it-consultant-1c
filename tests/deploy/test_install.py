@@ -89,6 +89,33 @@ def test_install_does_not_invoke_systemctl(fake_root: Path) -> None:
     assert "skipping systemctl" in result.stdout
 
 
+
+
+def test_undeploy_removes_fake_root_tree(fake_root: Path) -> None:
+    _run_install(fake_root, "--layout-only")
+    assert (fake_root / "opt" / "it-consultant").is_dir()
+    assert (fake_root / "etc" / "it-consultant" / ".env").is_file()
+    assert (fake_root / "var" / "lib" / "it-consultant" / "db").is_dir()
+    assert (fake_root / "etc" / "systemd" / "system" / "reindex.service").is_file()
+
+    result = _run_install(fake_root, "--undeploy")
+    assert "undeploy done" in result.stdout
+    assert "skipping systemctl" in result.stdout
+
+    assert not (fake_root / "opt" / "it-consultant").exists()
+    assert not (fake_root / "etc" / "it-consultant").exists()
+    assert not (fake_root / "var" / "lib" / "it-consultant").exists()
+    units = fake_root / "etc" / "systemd" / "system"
+    assert not (units / "reindex.service").exists()
+    assert not (units / "mail-gateway.service").exists()
+    assert not (units / "it-consultant.target").exists()
+
+
+def test_undeploy_is_idempotent_on_missing_tree(fake_root: Path) -> None:
+    result = _run_install(fake_root, "--undeploy")
+    assert "undeploy done" in result.stdout
+
+
 def _can_create_venv(tmp_path: Path) -> bool:
     venv_dir = tmp_path / "probe-venv"
     result = subprocess.run(
