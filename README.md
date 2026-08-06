@@ -38,6 +38,7 @@ cp .env.example .env
 
 ```bash
 # боевая установка (нужен root; создаёт user it-consultant и venv)
+# на TTY спросит все переменные из .env.example (Enter — оставить текущее)
 sudo ./deploy/install.sh --enable
 
 # только разложить файлы, без enable:
@@ -50,6 +51,8 @@ sudo ./deploy/install.sh --undeploy
 ```
 
 `enable it-consultant.target` создаёт symlink’и в `multi-user.target.wants` и (через `Also=`) подтягивает `mail-gateway` и `reindex`.
+
+При интерактивном запуске (stdin — TTY) скрипт парсит все `KEY=` из [`.env.example`](.env.example) (включая закомментированные опциональные) и спрашивает каждое значение. Пустой ввод (Enter) оставляет значение как в `.env` (или из `.env.example` при первой установке); для опциональных ключей, которых ещё нет в `.env`, Enter ничего не добавляет. Пароли/секреты (`*PASSWORD*`, `*SECRET*`, `*TOKEN*`) вводятся скрыто. Для CI / скриптов: `--no-configure` (или просто не-TTY — вопросы пропускаются); принудительно спросить даже без TTY: `--configure`.
 
 `--undeploy` останавливает и отключает `it-consultant.target` (и связанные unit’ы), удаляет `/opt/it-consultant`, `/etc/it-consultant`, `/var/lib/it-consultant`, unit-файлы из `/etc/systemd/system/` и системного пользователя/группу `it-consultant`.
 
@@ -64,12 +67,16 @@ sudo ./deploy/install.sh --undeploy
 ./deploy/install.sh --dest-dir /tmp/itc-root   # + venv/pip внутрь /tmp/...
 
 ./deploy/install.sh --dest-dir /tmp/itc-root --undeploy  # снять только фейковое дерево
+
+# неинтерактивно подставить первые переменные (остальные — Enter / EOF = defaults):
+printf '%s\n' 'mail.example.com' 'bot@example.com' 'DOMAIN\bot' 'secret' \
+  | ./deploy/install.sh --dest-dir /tmp/itc-root --layout-only --configure
 ```
 
 Автотесты (тоже через `--dest-dir` во временный каталог):
 
 ```bash
-pytest tests/deploy -q          # layout, undeploy, содержимое unit-файлов
+pytest tests/deploy -q          # layout, undeploy, configure, содержимое unit-файлов
 pytest tests/deploy -q -m slow  # полный install + smoke `python -m reindex` (нужен python3-venv)
 ```
 

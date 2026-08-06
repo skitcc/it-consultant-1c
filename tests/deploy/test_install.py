@@ -89,8 +89,6 @@ def test_install_does_not_invoke_systemctl(fake_root: Path) -> None:
     assert "skipping systemctl" in result.stdout
 
 
-
-
 def test_undeploy_removes_fake_root_tree(fake_root: Path) -> None:
     _run_install(fake_root, "--layout-only")
     assert (fake_root / "opt" / "it-consultant").is_dir()
@@ -114,6 +112,121 @@ def test_undeploy_removes_fake_root_tree(fake_root: Path) -> None:
 def test_undeploy_is_idempotent_on_missing_tree(fake_root: Path) -> None:
     result = _run_install(fake_root, "--undeploy")
     assert "undeploy done" in result.stdout
+
+
+def test_layout_only_skips_configure_without_tty(fake_root: Path) -> None:
+    result = _run_install(fake_root, "--layout-only")
+    assert "skipping interactive .env configure" in result.stdout
+
+
+def test_configure_updates_ews_values_from_stdin(fake_root: Path) -> None:
+    # First four keys in .env.example are EWS_*; EOF keeps the rest.
+    stdin = "\n".join(
+        [
+            "mail.example.com",
+            "bot@example.com",
+            r"DOMAIN\bot",
+            "s3cret",
+        ]
+    )
+    cmd = [
+        str(INSTALL_SH),
+        "--dest-dir",
+        str(fake_root),
+        "--layout-only",
+        "--configure",
+    ]
+    result = subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        input=stdin,
+    )
+    assert "configure .env" in result.stdout
+    assert "vars from .env.example" in result.stdout
+    env_text = (fake_root / "etc" / "it-consultant" / ".env").read_text(encoding="utf-8")
+    assert "EWS_SERVER=mail.example.com" in env_text
+    assert "EWS_EMAIL=bot@example.com" in env_text
+    assert r"EWS_USERNAME=DOMAIN\bot" in env_text
+    assert "EWS_PASSWORD=s3cret" in env_text
+    assert "WATCH_PATH=/var/lib/it-consultant/db" in env_text
+    # Optional commented keys stay commented when left empty.
+    assert "# AI_SYSTEM_PROMPT=" in env_text
+    assert not any(
+        line.startswith("AI_SYSTEM_PROMPT=") for line in env_text.splitlines()
+    )
+
+
+def test_configure_enter_keeps_existing_values(fake_root: Path) -> None:
+    _run_install(fake_root, "--layout-only", "--no-configure")
+    env_path = fake_root / "etc" / "it-consultant" / ".env"
+    before = env_path.read_text(encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(INSTALL_SH),
+            "--dest-dir",
+            str(fake_root),
+            "--layout-only",
+            "--configure",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        input="",  # EOF on every prompt → keep current
+    )
+    assert "configure .env" in result.stdout
+    assert env_path.read_text(encoding="utf-8") == before
+
+
+def test_configure_can_enable_optional_commented_key(fake_root: Path) -> None:
+    example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    keys: list[str] = []
+    seen: set[str] = set()
+    for line in example.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            body = stripped[1:].lstrip()
+            if body and body[0].isalpha() and "=" in body:
+                key = body.split("=", 1)[0]
+            else:
+                continue
+        elif "=" in stripped and stripped[0].isalpha():
+            key = stripped.split("=", 1)[0]
+        else:
+            continue
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+
+    answers = [""] * len(keys)
+    idx = keys.index("AI_SYSTEM_PROMPT")
+    answers[idx] = "You are an IT consultant."
+    stdin = "\n".join(answers) + "\n"
+
+    subprocess.run(
+        [
+            str(INSTALL_SH),
+            "--dest-dir",
+            str(fake_root),
+            "--layout-only",
+            "--configure",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        input=stdin,
+    )
+    env_text = (fake_root / "etc" / "it-consultant" / ".env").read_text(encoding="utf-8")
+    assert "AI_SYSTEM_PROMPT=You are an IT consultant." in env_text
+    assert not any(
+        line.strip().startswith("#") and "AI_SYSTEM_PROMPT=" in line
+        for line in env_text.splitlines()
+    )
 
 
 def _can_create_venv(tmp_path: Path) -> bool:

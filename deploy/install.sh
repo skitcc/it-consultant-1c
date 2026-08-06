@@ -34,6 +34,8 @@ LAYOUT_ONLY=0
 ENABLE=0
 CREATE_USER=1
 UNDEPLOY=0
+# configure: auto | yes | no  (auto = prompt when stdin is a TTY)
+CONFIGURE=auto
 PYTHON="${PYTHON:-python3}"
 
 usage() {
@@ -48,6 +50,9 @@ Options:
                    (ignored when --dest-dir is set).
   --undeploy       Stop/disable units, remove app/env/data/units and service
                    user (production). With --dest-dir only removes the fake tree.
+  --configure      Prompt for every variable from .env.example (Enter keeps
+                   current). Forced even when stdin is not a TTY.
+  --no-configure   Do not prompt for .env values (default for non-TTY / CI).
   --no-create-user Do not create service user/group (real install only).
   -h, --help       Show this help.
 
@@ -56,6 +61,9 @@ Paths (always absolute on the target system; prefixed by --dest-dir when set):
   /etc/it-consultant/.env  secrets / settings
   /var/lib/it-consultant/db  WATCH_PATH data
   /etc/systemd/system/     unit files
+
+Interactive configure (TTY by default, or --configure) asks for all KEY=
+entries parsed from .env.example (including commented optional keys).
 EOF
 }
 
@@ -75,6 +83,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --undeploy)
       UNDEPLOY=1
+      shift
+      ;;
+    --configure)
+      CONFIGURE=yes
+      shift
+      ;;
+    --no-configure)
+      CONFIGURE=no
       shift
       ;;
     --no-create-user)
@@ -132,6 +148,140 @@ create_service_user() {
   fi
 }
 
+should_configure_env() {
+  case "${CONFIGURE}" in
+    yes) return 0 ;;
+    no) return 1 ;;
+    auto)
+      [[ -t 0 ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+get_env_value() {
+  local file="$1" key="$2" line=""
+  line="$(grep -E "^${key}=" "${file}" 2>/dev/null | tail -n1 || true)"
+  if [[ -z "${line}" ]]; then
+    printf ''
+    return 0
+  fi
+  printf '%s' "${line#"${key}="}"
+}
+
+set_env_value() {
+  local file="$1" key="$2" value="$3"
+  local tmp
+  tmp="$(mktemp)"
+  if grep -qE "^${key}=" "${file}"; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" == "${key}="* ]]; then
+        printf '%s=%s\n' "${key}" "${value}"
+      else
+        printf '%s\n' "${line}"
+      fi
+    done <"${file}" >"${tmp}"
+  elif grep -qE "^[[:space:]]*#[[:space:]]*${key}=" "${file}"; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" =~ ^[[:space:]]*#[[:space:]]*${key}= ]]; then
+        printf '%s=%s\n' "${key}" "${value}"
+      else
+        printf '%s\n' "${line}"
+      fi
+    done <"${file}" >"${tmp}"
+  else
+    cat "${file}" >"${tmp}"
+    printf '%s=%s\n' "${key}" "${value}" >>"${tmp}"
+  fi
+  cat "${tmp}" >"${file}"
+  rm -f "${tmp}"
+}
+
+# Parse KEY names from .env.example (active KEY= and commented # KEY= lines).
+list_env_keys_from_example() {
+  local file="${REPO_ROOT}/.env.example"
+  local line key
+  declare -A seen=()
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" =~ ^[[:space:]]*#[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+      key="${BASH_REMATCH[1]}"
+    elif [[ "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+      key="${BASH_REMATCH[1]}"
+    else
+      continue
+    fi
+    if [[ -z "${seen[${key}]+x}" ]]; then
+      seen["${key}"]=1
+      printf '%s\n' "${key}"
+    fi
+  done <"${file}"
+}
+
+prompt_env_value() {
+  local key="$1" current="$2" secret="${3:-0}"
+  local display input=""
+  if [[ "${secret}" -eq 1 ]]; then
+    if [[ -n "${current}" ]]; then
+      display="****"
+    else
+      display="empty"
+    fi
+    printf '  %s [%s]: ' "${key}" "${display}" >&2
+    # -r keeps DOMAIN\user backslashes; -s hides password input.
+    IFS= read -r -s input || true
+    printf '\n' >&2
+  else
+    display="${current}"
+    printf '  %s [%s]: ' "${key}" "${display}" >&2
+    IFS= read -r input || true
+  fi
+  if [[ -z "${input}" ]]; then
+    printf '%s' "${current}"
+  else
+    printf '%s' "${input}"
+  fi
+}
+
+is_secret_env_key() {
+  local key="$1"
+  [[ "${key}" == *PASSWORD* || "${key}" == *SECRET* || "${key}" == *TOKEN* ]]
+}
+
+configure_env_file() {
+  local env_file="$1"
+  local key current value
+  local -a keys=()
+
+  if ! should_configure_env; then
+    log "skipping interactive .env configure"
+    return 0
+  fi
+
+  mapfile -t keys < <(list_env_keys_from_example)
+  if [[ "${#keys[@]}" -eq 0 ]]; then
+    log "no keys found in .env.example; skipping configure"
+    return 0
+  fi
+
+  log "configure .env (${#keys[@]} vars from .env.example; Enter keeps current)"
+  for key in "${keys[@]}"; do
+    current="$(get_env_value "${env_file}" "${key}")"
+    if is_secret_env_key "${key}"; then
+      value="$(prompt_env_value "${key}" "${current}" 1)"
+    else
+      value="$(prompt_env_value "${key}" "${current}" 0)"
+    fi
+    # Optional commented keys: do not create empty KEY= on Enter.
+    if [[ -z "${value}" ]] && ! grep -qE "^${key}=" "${env_file}"; then
+      continue
+    fi
+    set_env_value "${env_file}" "${key}" "${value}"
+  done
+  log "wrote settings into ${ETC_DIR}/.env"
+}
+
 install_layout() {
   log "creating directories under ${DEST_DIR:-/}"
   mkdir -p "$(root "${OPT_DIR}")"
@@ -151,6 +301,7 @@ install_layout() {
     log "keeping existing ${ETC_DIR}/.env"
   fi
 
+  configure_env_file "${env_dst}"
 
   log "installing systemd units"
   install -m 644 \
