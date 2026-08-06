@@ -1,4 +1,4 @@
-#!/tmp/itc-root/opt/it-consultant/.venv/bin/python3
+#!/opt/it-consultant/.venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys
