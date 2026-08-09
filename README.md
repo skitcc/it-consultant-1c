@@ -176,15 +176,17 @@ pytest
 Сервис следит за каталогом документации (`WATCH_PATH`) и после паузы без новых
 событий индексирует файлы в Qdrant: parse → chunk → Ollama embeddings → upsert.
 
-Поддерживаемые типы: `.txt`, `.md`, `.markdown`, `.rst`, `.log`, `.csv`, а также
-`.pdf` / `.docx` (нужен `pip install -e ".[reindex]"`).
+Поддерживаемые типы: `.txt`, `.md`, `.markdown`, `.rst`, `.log` (как текст), а также
+`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm`, `.csv` через Docling
+(`pip install -e ".[reindex]"`) — конвертация в Markdown в памяти перед chunking.
 
 ## Структура
 
 ```
 reindex/
+  formats.py          # TEXT / DOCLING / SUPPORTED_SUFFIXES
   ports.py            # DocumentReader
-  adapters/           # Text/Pdf/Docx + CompositeDocumentReader
+  adapters/           # Text/Docling + CompositeDocumentReader
   documents.py        # обход файлов по суффиксу
   indexer.py          # ABC Indexer + LoggingIndexer (stub для тестов)
   qdrant_indexer.py   # QdrantIndexer

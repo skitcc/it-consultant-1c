@@ -3,8 +3,7 @@ from unittest.mock import MagicMock
 
 from reindex.adapters.document_readers import (
     CompositeDocumentReader,
-    DocxDocumentReader,
-    PdfDocumentReader,
+    DoclingDocumentReader,
     TextDocumentReader,
 )
 
@@ -15,7 +14,7 @@ def test_text_document_reader(tmp_path: Path) -> None:
     assert TextDocumentReader().read(path) == "привет docs"
 
 
-def test_composite_dispatches_by_suffix(tmp_path: Path) -> None:
+def test_composite_dispatches_text_by_suffix(tmp_path: Path) -> None:
     path = tmp_path / "a.txt"
     path.write_text("plain", encoding="utf-8")
     reader = CompositeDocumentReader()
@@ -33,40 +32,58 @@ def test_composite_unsupported_suffix(tmp_path: Path) -> None:
         assert "Unsupported" in str(exc)
 
 
-def test_pdf_reader_uses_pypdf(monkeypatch, tmp_path: Path) -> None:
+def test_docling_reader_exports_markdown(tmp_path: Path) -> None:
     path = tmp_path / "a.pdf"
     path.write_bytes(b"%PDF")
 
-    page = MagicMock()
-    page.extract_text.return_value = "pdf text"
-    reader_obj = MagicMock()
-    reader_obj.pages = [page]
+    document = MagicMock()
+    document.export_to_markdown.return_value = "# Title\n\npdf body"
+    result = MagicMock()
+    result.document = document
+    converter = MagicMock()
+    converter.convert.return_value = result
 
-    import sys
-
-    fake_pypdf = MagicMock()
-    fake_pypdf.PdfReader.return_value = reader_obj
-    monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf)
-
-    text = PdfDocumentReader().read(path)
-    assert text == "pdf text"
-    fake_pypdf.PdfReader.assert_called_once_with(str(path))
+    text = DoclingDocumentReader(converter=converter).read(path)
+    assert text == "# Title\n\npdf body"
+    converter.convert.assert_called_once_with(str(path))
+    document.export_to_markdown.assert_called_once_with()
 
 
-def test_docx_reader_uses_python_docx(monkeypatch, tmp_path: Path) -> None:
+def test_composite_dispatches_docling_suffix(tmp_path: Path) -> None:
+    path = tmp_path / "sheet.xlsx"
+    path.write_bytes(b"PK")
+
+    document = MagicMock()
+    document.export_to_markdown.return_value = "| a | b |\n|---|---|\n| 1 | 2 |"
+    result = MagicMock()
+    result.document = document
+    converter = MagicMock()
+    converter.convert.return_value = result
+
+    reader = CompositeDocumentReader(
+        readers={".xlsx": DoclingDocumentReader(converter=converter)}
+    )
+    assert "1 | 2" in reader.read(path)
+    converter.convert.assert_called_once_with(str(path))
+
+
+def test_docling_reader_missing_package(monkeypatch, tmp_path: Path) -> None:
     path = tmp_path / "a.docx"
     path.write_bytes(b"PK")
 
-    para = MagicMock()
-    para.text = "docx line"
-    document = MagicMock()
-    document.paragraphs = [para]
+    import builtins
 
-    import sys
-    fake_docx = MagicMock()
-    fake_docx.Document.return_value = document
-    monkeypatch.setitem(sys.modules, "docx", fake_docx)
+    real_import = builtins.__import__
 
-    text = DocxDocumentReader().read(path)
-    assert text == "docx line"
-    fake_docx.Document.assert_called_once_with(str(path))
+    def fake_import(name, *args, **kwargs):
+        if name == "docling.document_converter" or name.startswith("docling"):
+            raise ImportError("no docling")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    try:
+        DoclingDocumentReader().read(path)
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "docling" in str(exc)

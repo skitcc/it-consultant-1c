@@ -13,8 +13,8 @@ def test_parse_index_extensions() -> None:
 
 
 def test_resolve_drops_unknown_extensions() -> None:
-    resolved = resolve_index_extensions(".md,.xlsx,.pdf")
-    assert resolved == frozenset({".md", ".pdf"})
+    resolved = resolve_index_extensions(".md,.xlsx,.pdf,.bin")
+    assert resolved == frozenset({".md", ".xlsx", ".pdf"})
 
 
 def test_iter_document_files_filters_by_extension(tmp_path: Path) -> None:
