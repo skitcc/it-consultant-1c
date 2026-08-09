@@ -8,8 +8,9 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class DocumentReader(Protocol):
-    """Extract plain text from a document file."""
+    """Extract Markdown / UTF-8 text from a document file."""
 
     def read(self, path: Path) -> str:
-        """Return UTF-8 text extracted from ``path``."""
+        """Return Markdown or plain UTF-8 text extracted from ``path``."""
         ...
+
