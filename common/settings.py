@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     )
     debounce_seconds: float = Field(default=1.0, alias="DEBOUNCE_SECONDS")
     index_extensions: str = Field(
-        default=".txt,.md,.markdown,.rst,.log,.csv,.pdf,.docx",
+        default=".txt,.md,.markdown,.rst,.log,.csv,.pdf,.docx,.pptx,.xlsx,.xls,.html,.htm",
         alias="INDEX_EXTENSIONS",
     )
 
