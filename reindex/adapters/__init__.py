@@ -1,15 +1,13 @@
 from reindex.adapters.document_readers import (
     CompositeDocumentReader,
-    DocxDocumentReader,
-    PdfDocumentReader,
+    DoclingDocumentReader,
     TextDocumentReader,
     build_default_document_reader,
 )
 
 __all__ = [
     "CompositeDocumentReader",
-    "DocxDocumentReader",
-    "PdfDocumentReader",
+    "DoclingDocumentReader",
     "TextDocumentReader",
     "build_default_document_reader",
 ]
