@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from reindex.documents import (
+from reindex.domain.documents import (
     iter_document_files,
     parse_index_extensions,
     resolve_index_extensions,

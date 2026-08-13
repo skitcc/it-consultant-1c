@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from reindex.indexer import Indexer
+from reindex.ports import Indexer
 from reindex.watcher import ChangeHandler, DebouncedReindex, create_observer
 
 
