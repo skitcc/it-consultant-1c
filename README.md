@@ -140,7 +140,7 @@ pytest
    - `EMBEDDING_MODEL=nomic-embed-text`
    - `QDRANT_URL=http://127.0.0.1:6333`
    - рабочие `EWS_*`
-3. Проиндексируйте документы (`WATCH_PATH`) через `python -m reindex`.
+3. Проиндексируйте документы (`WATCH_PATH`) через `python -m reindex --once`.
 4. Запуск шлюза:
    ```bash
    python -m mail_gateway
@@ -174,22 +174,21 @@ pytest
 # Reindex
 
 Сервис следит за каталогом документации (`WATCH_PATH`) и после паузы без новых
-событий индексирует файлы в Qdrant: parse → chunk → Ollama embeddings → upsert.
+событий индексирует файлы в Qdrant: Docling convert → HybridChunker → Ollama
+embeddings → upsert.
 
-Поддерживаемые типы: `.txt`, `.md`, `.markdown`, `.rst`, `.log` (как текст), а также
-`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm`, `.csv` через Docling
-(`pip install -e ".[reindex]"`) — конвертация в Markdown в памяти перед chunking.
+Поддерживаемые типы: `.txt`, `.md`, `.markdown`, `.rst`, `.log`, `.csv`, `.pdf`,
+`.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm` (`pip install -e ".[reindex]"`).
+Ридер возвращает семантические чанки Docling (`HybridChunker` + `contextualize`),
+с заголовками секций и таблицами в Markdown. OCR для PDF выключен.
 
 ## Структура
 
 ```
 reindex/
-  formats.py          # TEXT / DOCLING / SUPPORTED_SUFFIXES
-  ports.py            # DocumentReader
-  adapters/           # Text/Docling + CompositeDocumentReader
-  documents.py        # обход файлов по суффиксу
-  indexer.py          # ABC Indexer + LoggingIndexer (stub для тестов)
-  qdrant_indexer.py   # QdrantIndexer
+  domain/             # DocumentChunk, суффиксы, обход файлов
+  ports/              # DocumentReader, Indexer, Embedder
+  adapters/           # Docling HybridChunker, QdrantIndexer, LoggingIndexer
   watcher.py          # watchdog + DebouncedReindex
   service.py          # composition root и run loop
 mail_gateway/adapters/rag/
@@ -198,18 +197,17 @@ mail_gateway/adapters/rag/
   reranking_retriever.py
 common/
   embeddings.py       # OllamaEmbedder (/api/embeddings)
-  chunking.py         # разбиение текста на чанки
-deploy/               # install.sh (--enable / --undeploy) + systemd units
+deploy/               # install.sh / install-reindex.sh + systemd units
 tests/reindex/
 ```
 
 ## Поток
 
-1. При старте — полный reindex каталога.
-2. `watchdog` рекурсивно наблюдает `WATCH_PATH`.
+1. При старте (и при `--once`) — полный reindex каталога.
+2. Без `--once`: `watchdog` рекурсивно наблюдает `WATCH_PATH`.
 3. События create / modify / delete / move сбрасывают debounce-таймер.
 4. После `DEBOUNCE_SECONDS` тишины — снова полный reindex в коллекцию Qdrant.
-5. Ошибка в indexer логируется; сервис продолжает работать.
+5. Ошибка в indexer логируется; сервис продолжает работать (`--once` пробрасывает ошибку).
 
 ## Конфиг (через общий `.env`)
 
@@ -224,10 +222,12 @@ tests/reindex/
 | `RAG_TOP_K` | Сколько чанков оставить после rerank | `8` |
 | `RAG_NEIGHBOR_WINDOW` | Соседние chunk_index (±N) | `1` |
 | `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama-compatible API | `true` / `bge-reranker-v2-m3` |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | Размер чанка и overlap (символы) | `1200` / `150` |
+| `CHUNK_SIZE` | Max tokens для HybridChunker | `512` |
 | `LOG_LEVEL` | Уровень логов | `INFO` |
 
-Плюс общие / mail-поля из [`.env.example`](.env.example).
+`CHUNK_OVERLAP` в `.env` игнорируется reindex (соседей склеивает `merge_peers`).
+Плюс общие / mail-поля из [`.env.example`](.env.example). `Settings` всё равно
+требует `EWS_*` — для локального reindex достаточно заглушек.
 
 ## Запуск
 
@@ -235,12 +235,34 @@ tests/reindex/
 docker compose up -d ollama qdrant
 ollama pull nomic-embed-text
 pip install -e ".[reindex,dev]"
-python -m reindex
+python -m reindex --once    # один проход, без watcher
+python -m reindex           # watcher
 ```
+
+## Проверка на Windows
+
+Python — в WSL, Qdrant и Ollama — Docker Desktop (`localhost:6333` / `11434`
+доступны из WSL).
+
+1. `docker compose up -d qdrant ollama`
+2. `ollama pull nomic-embed-text`
+3. В `.env`: заглушки `EWS_*`, `WATCH_PATH` на существующую папку
+   (из WSL: `/mnt/c/Users/.../docs`), `QDRANT_URL=http://127.0.0.1:6333`,
+   `OLLAMA_BASE_URL=http://127.0.0.1:11434`
+4. В WSL: `pip install -e ".[reindex]"` (если No space — сжать VHDX WSL;
+   конвертер идёт без OCR)
+5. Положить в `WATCH_PATH` смесь `.md`, `.txt`, `.pdf`, `.docx`, `.xlsx`
+6. `python -m reindex --once` — в логе `Qdrant reindex done ... points=N`
+7. Дашборд: http://127.0.0.1:6333/dashboard — коллекция `docs`, payload `text`
+   с заголовками секций, таблицы в Markdown
+8. Для проверки debounce: `python -m reindex`, затем добавить/заменить файл —
+   коллекция пересоздаётся целиком
 
 ## Indexer
 
 По умолчанию используется `QdrantIndexer`. Stub `LoggingIndexer` остаётся для тестов.
+Payload точки: `text`, `source_path`, `chunk_index` (совместимо с RAG), плюс
+`headings` и `file_hash`.
 
 ## Тесты
 
@@ -252,4 +274,4 @@ pytest tests/reindex tests/common tests/deploy
 
 ## systemd
 
-Unit-файлы: [`deploy/systemd/`](deploy/systemd/). Установка и снятие — через [`deploy/install.sh`](deploy/install.sh) (`--enable` / `--undeploy`, см. раздел «Установка на сервер» выше).
+Unit-файлы: [`deploy/systemd/`](deploy/systemd/). Установка и снятие — через [`deploy/install.sh`](deploy/install.sh) (`--enable` / `--undeploy`, см. раздел «Установка на сервер» выше). Для только reindex — [`deploy/install-reindex.sh`](deploy/install-reindex.sh).
