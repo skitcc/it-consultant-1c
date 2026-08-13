@@ -147,4 +147,14 @@ def _chunk_from_payload(
         source_path=str(payload.get("source_path") or ""),
         chunk_index=int(payload.get("chunk_index") or 0),
         score=score,
+        headings=_headings_from_payload(payload),
     )
+
+
+def _headings_from_payload(payload: dict) -> tuple[str, ...]:
+    raw = payload.get("headings")
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(item) for item in raw if item)
+    if isinstance(raw, str) and raw.strip():
+        return (raw.strip(),)
+    return ()

@@ -14,6 +14,8 @@ def format_documentation_context(chunks: Sequence[DocumentChunk]) -> str:
     lines = ["Релевантные фрагменты документации:"]
     for index, chunk in enumerate(chunks, start=1):
         header = f"[{index}] source={chunk.source_path} chunk={chunk.chunk_index}"
+        if chunk.headings:
+            header = f"{header} headings={' / '.join(chunk.headings)}"
         if chunk.score is not None:
             header = f"{header} score={chunk.score:.4f}"
         lines.append(header)

@@ -11,6 +11,7 @@ def test_qdrant_retriever_maps_hits() -> None:
         "text": "настройка обмена",
         "source_path": "guide.md",
         "chunk_index": 2,
+        "headings": ["Обмен данными", "Настройка"],
     }
     hit.score = 0.87
 
@@ -43,6 +44,7 @@ def test_qdrant_retriever_maps_hits() -> None:
             source_path="guide.md",
             chunk_index=2,
             score=0.87,
+            headings=("Обмен данными", "Настройка"),
         )
     ]
     client.query_points.assert_called_once()
@@ -67,6 +69,7 @@ def test_qdrant_load_neighbors() -> None:
         "text": "neighbor",
         "source_path": "faq.md",
         "chunk_index": 1,
+        "headings": ["Принтеры"],
     }
     client = MagicMock()
     client.collection_exists.return_value = True
@@ -80,10 +83,22 @@ def test_qdrant_load_neighbors() -> None:
     retriever._client = client
 
     seeds = [
-        DocumentChunk(text="seed", source_path="faq.md", chunk_index=1, score=0.5)
+        DocumentChunk(
+            text="seed",
+            source_path="faq.md",
+            chunk_index=1,
+            score=0.5,
+            headings=("Принтеры",),
+        )
     ]
     loaded = retriever.load_neighbors(seeds, window=1)
     assert loaded == [
-        DocumentChunk(text="neighbor", source_path="faq.md", chunk_index=1, score=None)
+        DocumentChunk(
+            text="neighbor",
+            source_path="faq.md",
+            chunk_index=1,
+            score=None,
+            headings=("Принтеры",),
+        )
     ]
     client.scroll.assert_called_once()

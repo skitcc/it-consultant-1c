@@ -23,6 +23,7 @@ class DocumentChunk:
     source_path: str
     chunk_index: int = 0
     score: float | None = None
+    headings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
