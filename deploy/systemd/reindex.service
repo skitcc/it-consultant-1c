@@ -22,4 +22,5 @@ PrivateTmp=true
 ReadWritePaths=/var/lib/it-consultant
 
 [Install]
+WantedBy=multi-user.target
 WantedBy=it-consultant.target
