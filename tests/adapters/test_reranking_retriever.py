@@ -3,12 +3,19 @@ from mail_gateway.adapters.rag.reranking_retriever import RerankingRetriever
 from mail_gateway.domain.models import DocumentChunk
 
 
-def _chunk(path: str, index: int, text: str, score: float | None = None) -> DocumentChunk:
+def _chunk(
+    path: str,
+    index: int,
+    text: str,
+    score: float | None = None,
+    headings: tuple[str, ...] = (),
+) -> DocumentChunk:
     return DocumentChunk(
         text=text,
         source_path=path,
         chunk_index=index,
         score=score,
+        headings=headings,
     )
 
 
@@ -23,6 +30,30 @@ def test_expand_neighbor_chunks_includes_window() -> None:
     expanded = expand_neighbor_chunks(selected, pool, window=1)
     assert [c.chunk_index for c in expanded] == [1, 2, 3]
     assert [c.text for c in expanded] == ["left", "center", "right"]
+
+
+def test_expand_neighbor_chunks_stays_in_same_section() -> None:
+    selected = [_chunk("faq.md", 2, "center", 0.9, headings=("Принтеры", "Чеки"))]
+    pool = [
+        _chunk("faq.md", 1, "same section prev", headings=("Принтеры", "Чеки")),
+        _chunk("faq.md", 2, "center", 0.9, headings=("Принтеры", "Чеки")),
+        _chunk("faq.md", 3, "next section", headings=("Сеть", "VPN")),
+    ]
+    expanded = expand_neighbor_chunks(selected, pool, window=1)
+    assert [c.text for c in expanded] == ["same section prev", "center"]
+
+
+def test_expand_neighbor_chunks_caps_section_siblings() -> None:
+    selected = [_chunk("guide.md", 3, "c", headings=("Установка",))]
+    pool = [
+        _chunk("guide.md", 1, "a", headings=("Установка",)),
+        _chunk("guide.md", 2, "b", headings=("Установка",)),
+        _chunk("guide.md", 3, "c", headings=("Установка",)),
+        _chunk("guide.md", 4, "d", headings=("Установка",)),
+        _chunk("guide.md", 5, "e", headings=("Установка",)),
+    ]
+    expanded = expand_neighbor_chunks(selected, pool, window=1)
+    assert [c.text for c in expanded] == ["b", "c", "d"]
 
 
 def test_reranking_retriever_top_k_and_neighbors() -> None:

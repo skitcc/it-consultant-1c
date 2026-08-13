@@ -109,7 +109,7 @@ tests/
 1. EWS Streaming: событие `NewMail` в Inbox.
 2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
 3. Загрузка треда, очистка тел.
-4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (+ соседние чанки) → фрагменты в `system_prompt`.
+4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (соседи в том же разделе по `headings`) → фрагменты в `system_prompt`.
 5. `POST` в Ollama `/api/chat`.
 6. Reply через EWS в тот же тред.
 7. При обрыве streaming — reconnect.
@@ -220,7 +220,7 @@ tests/reindex/
 | `EMBEDDING_MODEL` | Модель embeddings в Ollama | `nomic-embed-text` |
 | `RAG_CANDIDATES` | Сколько кандидатов брать из Qdrant | `20` |
 | `RAG_TOP_K` | Сколько чанков оставить после rerank | `8` |
-| `RAG_NEIGHBOR_WINDOW` | Соседние chunk_index (±N) | `1` |
+| `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
 | `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama-compatible API | `true` / `bge-reranker-v2-m3` |
 | `CHUNK_SIZE` | Max tokens для HybridChunker | `512` |
 | `LOG_LEVEL` | Уровень логов | `INFO` |

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class RerankingRetriever:
-    """DocumentRetriever: candidates → rerank → top_k → neighbor expand."""
+    """DocumentRetriever: candidates → rerank → top_k → same-section neighbors."""
 
     def __init__(
         self,
