@@ -10,9 +10,10 @@ from pathlib import Path
 from common import Settings
 from common.embeddings import OllamaEmbedder
 from common.logging_config import configure_logging
-from reindex.documents import parse_index_extensions, resolve_index_extensions
-from reindex.indexer import Indexer
-from reindex.qdrant_indexer import QdrantIndexer
+from reindex.adapters.document_readers import build_default_document_reader
+from reindex.adapters.qdrant_indexer import QdrantIndexer
+from reindex.domain.documents import parse_index_extensions, resolve_index_extensions
+from reindex.ports import Indexer
 from reindex.watcher import ChangeHandler, DebouncedReindex, create_observer
 
 logger = logging.getLogger(__name__)
@@ -33,12 +34,12 @@ def build_indexer(settings: Settings) -> Indexer:
         model=settings.embedding_model,
         timeout_sec=settings.embedding_timeout_sec,
     )
+    reader = build_default_document_reader(max_tokens=settings.chunk_size)
     return QdrantIndexer(
         qdrant_url=settings.qdrant_url,
         collection=settings.qdrant_collection,
         embedder=embedder,
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
+        document_reader=reader,
         allowed_extensions=allowed,
     )
 
@@ -46,10 +47,12 @@ def build_indexer(settings: Settings) -> Indexer:
 def run(
     settings: Settings | None = None,
     indexer: Indexer | None = None,
+    *,
+    once: bool = False,
 ) -> None:
     """Start watching ``settings.watch_path`` and reindex on changes.
 
-    Blocks until SIGINT/SIGTERM or KeyboardInterrupt.
+    Blocks until SIGINT/SIGTERM or KeyboardInterrupt, unless ``once`` is set.
     """
     cfg = settings if settings is not None else Settings()
     configure_logging(cfg.log_level)
@@ -59,6 +62,26 @@ def run(
         raise FileNotFoundError(f"watch_path does not exist: {watch}")
 
     idx = indexer if indexer is not None else build_indexer(cfg)
+
+    logger.info(
+        "Starting reindex on %s (once=%s debounce=%ss qdrant=%s collection=%s extensions=%s)",
+        watch,
+        once,
+        cfg.debounce_seconds,
+        cfg.qdrant_url,
+        cfg.qdrant_collection,
+        sorted(resolve_index_extensions(cfg.index_extensions)),
+    )
+    try:
+        idx.reindex(str(watch))
+    except Exception:
+        logger.exception("Initial reindex failed for %s", watch)
+        if once:
+            raise
+
+    if once:
+        logger.info("Reindex --once complete")
+        return
 
     debouncer = DebouncedReindex(
         indexer=idx,
@@ -79,20 +102,6 @@ def run(
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-
-    logger.info(
-        "Starting reindex watcher on %s (debounce=%ss qdrant=%s collection=%s extensions=%s)",
-        watch,
-        cfg.debounce_seconds,
-        cfg.qdrant_url,
-        cfg.qdrant_collection,
-        sorted(resolve_index_extensions(cfg.index_extensions)),
-    )
-    # Initial full index so cold start has vectors without waiting for FS events.
-    try:
-        idx.reindex(str(watch))
-    except Exception:
-        logger.exception("Initial reindex failed for %s", watch)
 
     observer.start()
     try:

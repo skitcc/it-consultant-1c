@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     rerank_model: str = Field(default="bge-reranker-v2-m3", alias="RERANK_MODEL")
     rerank_base_url: str | None = Field(default=None, alias="RERANK_BASE_URL")
     rerank_timeout_sec: float = Field(default=60.0, alias="RERANK_TIMEOUT_SEC")
-    chunk_size: int = Field(default=1200, alias="CHUNK_SIZE")
+    chunk_size: int = Field(default=512, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=150, alias="CHUNK_OVERLAP")
 
     # --- reindex ---

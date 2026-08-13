@@ -1,4 +1,4 @@
-"""Index watched documents into Qdrant via Ollama embeddings."""
+"""Index watched documents into Qdrant via embeddings."""
 
 from __future__ import annotations
 
@@ -9,38 +9,34 @@ from pathlib import Path
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
-from common.chunking import chunk_text
-from common.embeddings import OllamaEmbedder
 from reindex.adapters.document_readers import build_default_document_reader
-from reindex.documents import iter_document_files
-from reindex.indexer import Indexer
-from reindex.ports import DocumentReader
+from reindex.domain.documents import iter_document_files
+from reindex.ports import DocumentReader, Embedder
 
 logger = logging.getLogger(__name__)
 
 _POINT_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
 
-class QdrantIndexer(Indexer):
-    """Full-directory reindex: parse → chunk → embed → recreate collection."""
+class QdrantIndexer:
+    """Full-directory reindex: read chunks → embed → recreate collection."""
 
     def __init__(
         self,
         *,
         qdrant_url: str,
         collection: str,
-        embedder: OllamaEmbedder,
-        chunk_size: int = 1200,
-        chunk_overlap: int = 150,
+        embedder: Embedder,
         document_reader: DocumentReader | None = None,
         allowed_extensions: frozenset[str] | set[str] | None = None,
+        max_tokens: int = 512,
     ) -> None:
         self._client = QdrantClient(url=qdrant_url, check_compatibility=False)
         self._collection = collection
         self._embedder = embedder
-        self._chunk_size = chunk_size
-        self._chunk_overlap = chunk_overlap
-        self._document_reader = document_reader or build_default_document_reader()
+        self._document_reader = document_reader or build_default_document_reader(
+            max_tokens=max_tokens,
+        )
         self._allowed_extensions = frozenset(allowed_extensions or ())
 
     def reindex(self, watch_path: str) -> None:
@@ -63,16 +59,12 @@ class QdrantIndexer(Indexer):
         for path in files:
             relative = path.relative_to(root).as_posix()
             try:
-                text = self._document_reader.read(path)
+                chunks = list(self._document_reader.read(path))
             except Exception:
                 logger.exception("Failed to read document %s", relative)
                 continue
 
-            chunks = chunk_text(
-                text,
-                chunk_size=self._chunk_size,
-                overlap=self._chunk_overlap,
-            )
+            chunks = [chunk for chunk in chunks if chunk.text.strip()]
             if not chunks:
                 logger.info("Skip empty document %s", relative)
                 continue
@@ -80,7 +72,7 @@ class QdrantIndexer(Indexer):
             file_hash = _file_fingerprint(path)
             for index, chunk in enumerate(chunks):
                 try:
-                    vector = self._embedder.embed(chunk)
+                    vector = self._embedder.embed(chunk.text)
                 except Exception:
                     logger.exception(
                         "Failed to embed chunk path=%s index=%s",
@@ -101,16 +93,19 @@ class QdrantIndexer(Indexer):
                     continue
 
                 point_id = _point_id(relative, index)
+                payload: dict[str, object] = {
+                    "source_path": relative,
+                    "chunk_index": index,
+                    "text": chunk.text,
+                    "file_hash": file_hash,
+                }
+                if chunk.headings:
+                    payload["headings"] = list(chunk.headings)
                 points.append(
                     qmodels.PointStruct(
                         id=str(point_id),
                         vector=vector,
-                        payload={
-                            "source_path": relative,
-                            "chunk_index": index,
-                            "text": chunk,
-                            "file_hash": file_hash,
-                        },
+                        payload=payload,
                     )
                 )
 

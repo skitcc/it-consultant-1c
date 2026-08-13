@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from reindex.formats import SUPPORTED_SUFFIXES
+from reindex.domain.formats import SUPPORTED_SUFFIXES
 
 
 def parse_index_extensions(raw: str | None) -> frozenset[str]:

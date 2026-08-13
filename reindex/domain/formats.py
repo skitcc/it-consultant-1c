@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-# Plain text: read as-is (no Docling).
+# Plain text: Docling still converts + HybridChunker (headings for Markdown).
 TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".log"}
 
-# Structured / office formats converted to Markdown via Docling.
+# Structured / office formats converted via Docling.
 DOCLING_SUFFIXES = {
     ".pdf",
     ".docx",

@@ -9,7 +9,7 @@ from typing import Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from reindex.indexer import Indexer
+from reindex.ports import Indexer
 
 logger = logging.getLogger(__name__)
 
