@@ -34,8 +34,8 @@ class OllamaEmbedder:
 
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(
-                f"{self._base_url}/api/embeddings",
-                json={"model": self._model, "prompt": prompt},
+                f"{self._base_url}/api/embed",
+                json={"model": self._model, "input": prompt},
             )
             response.raise_for_status()
             data = response.json()
