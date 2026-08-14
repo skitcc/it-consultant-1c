@@ -1,6 +1,7 @@
 from reindex.adapters.document_readers import (
     CompositeDocumentReader,
     DoclingDocumentReader,
+    PictureDescriptionConfig,
     TextDocumentReader,
     build_default_document_reader,
 )
@@ -11,6 +12,7 @@ __all__ = [
     "CompositeDocumentReader",
     "DoclingDocumentReader",
     "LoggingIndexer",
+    "PictureDescriptionConfig",
     "QdrantIndexer",
     "TextDocumentReader",
     "build_default_document_reader",

@@ -10,7 +10,10 @@ from pathlib import Path
 from common import Settings
 from common.embeddings import OllamaEmbedder
 from common.logging_config import configure_logging
-from reindex.adapters.document_readers import build_default_document_reader
+from reindex.adapters.document_readers import (
+    PictureDescriptionConfig,
+    build_default_document_reader,
+)
 from reindex.adapters.qdrant_indexer import QdrantIndexer
 from reindex.domain.documents import parse_index_extensions, resolve_index_extensions
 from reindex.ports import Indexer
@@ -29,12 +32,27 @@ def build_indexer(settings: Settings) -> Indexer:
             sorted(unknown),
         )
     logger.info("Index extensions enabled: %s", sorted(allowed))
+    if settings.picture_description_enabled:
+        logger.info(
+            "Picture description enabled model=%s ollama=%s",
+            settings.vlm_model,
+            settings.ollama_base_url,
+        )
     embedder = OllamaEmbedder(
         base_url=settings.ollama_base_url,
         model=settings.embedding_model,
         timeout_sec=settings.embedding_timeout_sec,
     )
-    reader = build_default_document_reader(max_tokens=settings.chunk_size)
+    reader = build_default_document_reader(
+        max_tokens=settings.chunk_size,
+        picture=PictureDescriptionConfig(
+            enabled=settings.picture_description_enabled,
+            ollama_base_url=settings.ollama_base_url,
+            model=settings.vlm_model,
+            timeout_sec=settings.vlm_timeout_sec,
+            area_threshold=settings.picture_area_threshold,
+        ),
+    )
     return QdrantIndexer(
         qdrant_url=settings.qdrant_url,
         collection=settings.qdrant_collection,
