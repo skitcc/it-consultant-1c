@@ -4,7 +4,11 @@ from unittest.mock import MagicMock
 from reindex.adapters.document_readers import (
     CompositeDocumentReader,
     DoclingDocumentReader,
+    PictureDescriptionConfig,
     TextDocumentReader,
+    chat_completions_url,
+    format_picture_block,
+    picture_pipeline_flags,
 )
 from reindex.domain.models import DocumentChunk
 
@@ -140,3 +144,61 @@ def test_docling_reader_missing_package(monkeypatch, tmp_path: Path) -> None:
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
         assert "docling" in str(exc)
+
+
+def test_format_picture_block_includes_description_and_caption() -> None:
+    text = format_picture_block(
+        description="Форма настройки обмена, кнопка Записать",
+        caption="Рис. 1. Обмен",
+    )
+    assert text.startswith("[Изображение]")
+    assert "Описание: Форма настройки обмена, кнопка Записать" in text
+    assert "Подпись: Рис. 1. Обмен" in text
+    assert "<!-- image -->" not in text
+
+
+def test_format_picture_block_empty_description() -> None:
+    assert format_picture_block(description="  ", caption="Рис. 1") == ""
+    assert "<!-- image -->" not in format_picture_block(description="")
+
+
+def test_picture_pipeline_flags_disabled_keeps_ocr_off_only() -> None:
+    flags = picture_pipeline_flags(PictureDescriptionConfig(enabled=False))
+    assert flags == {"do_ocr": False}
+    assert "enable_remote_services" not in flags
+    assert "do_picture_description" not in flags
+
+
+def test_picture_pipeline_flags_enabled_uses_remote_vlm() -> None:
+    flags = picture_pipeline_flags(PictureDescriptionConfig(enabled=True))
+    assert flags["do_ocr"] is False
+    assert flags["do_picture_description"] is True
+    assert flags["enable_remote_services"] is True
+    assert flags["generate_picture_images"] is True
+
+
+def test_chat_completions_url_uses_ollama_base() -> None:
+    assert (
+        chat_completions_url("http://127.0.0.1:11434")
+        == "http://127.0.0.1:11434/v1/chat/completions"
+    )
+    assert (
+        chat_completions_url("http://ollama:11434/")
+        == "http://ollama:11434/v1/chat/completions"
+    )
+
+
+def test_picture_serializer_uses_annotation_and_caption() -> None:
+    from reindex.adapters.document_readers import _PictureDescriptionSerializer
+
+    item = MagicMock()
+    annotation = MagicMock()
+    annotation.text = "кнопка Провести"
+    item.annotations = [annotation]
+    item.caption_text = lambda doc=None: "Скрин формы"
+    item.self_ref = "#/pictures/0"
+    result = _PictureDescriptionSerializer().serialize(item=item, doc=None)
+    text = result if isinstance(result, str) else getattr(result, "text", "")
+    assert "[Изображение]" in text
+    assert "Описание: кнопка Провести" in text
+    assert "Подпись: Скрин формы" in text

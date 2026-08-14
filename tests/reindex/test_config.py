@@ -48,6 +48,10 @@ def test_settings_default_chunk_size_is_max_tokens() -> None:
         EWS_PASSWORD="p",
     )
     assert settings.chunk_size == 512
+    assert settings.picture_description_enabled is True
+    assert settings.vlm_model == "qwen3-vl:8b"
+    assert settings.vlm_timeout_sec == 90.0
+    assert settings.picture_area_threshold == 0.02
 
 
 def test_run_once_reindexes_and_returns(tmp_path: Path) -> None:

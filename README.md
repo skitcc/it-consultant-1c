@@ -182,6 +182,11 @@ embeddings → upsert.
 Ридер возвращает семантические чанки Docling (`HybridChunker` + `contextualize`),
 с заголовками секций и таблицами в Markdown. OCR для PDF выключен.
 
+Картинки не гоняются через VLM-pipeline на всю страницу. Это **enrichment**:
+обычный convert, затем Ollama VLM (`VLM_MODEL` на том же `OLLAMA_BASE_URL`)
+описывает вырезанные рисунки. В чанк вместо `<!-- image -->` попадает блок
+`[Изображение]` с описанием и подписью. HybridChunker и RAG не меняются.
+
 ## Структура
 
 ```
@@ -223,6 +228,10 @@ tests/reindex/
 | `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
 | `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama-compatible API | `true` / `bge-reranker-v2-m3` |
 | `CHUNK_SIZE` | Max tokens для HybridChunker | `512` |
+| `PICTURE_DESCRIPTION_ENABLED` | VLM-описания картинок (enrichment) | `true` |
+| `VLM_MODEL` | Vision-модель в том же Ollama | `qwen3-vl:8b` |
+| `VLM_TIMEOUT_SEC` | Таймаут описания одной картинки | `90` |
+| `PICTURE_AREA_THRESHOLD` | Мин. доля площади страницы для VLM | `0.02` |
 | `LOG_LEVEL` | Уровень логов | `INFO` |
 
 `CHUNK_OVERLAP` в `.env` игнорируется reindex (соседей склеивает `merge_peers`).
@@ -234,6 +243,7 @@ tests/reindex/
 ```bash
 docker compose up -d ollama qdrant
 ollama pull nomic-embed-text
+ollama pull qwen3-vl:8b   # или moondream / qwen2.5vl:3b для локальной проверки
 pip install -e ".[reindex,dev]"
 python -m reindex --once    # один проход, без watcher
 python -m reindex           # watcher
@@ -245,7 +255,7 @@ Python — в WSL, Qdrant и Ollama — Docker Desktop (`localhost:6333` / `1143
 доступны из WSL).
 
 1. `docker compose up -d qdrant ollama`
-2. `ollama pull nomic-embed-text`
+2. `ollama pull nomic-embed-text` и `ollama pull qwen3-vl:8b` (локально можно `VLM_MODEL=moondream`)
 3. В `.env`: заглушки `EWS_*`, `WATCH_PATH` на существующую папку
    (из WSL: `/mnt/c/Users/.../docs`), `QDRANT_URL=http://127.0.0.1:6333`,
    `OLLAMA_BASE_URL=http://127.0.0.1:11434`
@@ -254,7 +264,7 @@ Python — в WSL, Qdrant и Ollama — Docker Desktop (`localhost:6333` / `1143
 5. Положить в `WATCH_PATH` смесь `.md`, `.txt`, `.pdf`, `.docx`, `.xlsx`
 6. `python -m reindex --once` — в логе `Qdrant reindex done ... points=N`
 7. Дашборд: http://127.0.0.1:6333/dashboard — коллекция `docs`, payload `text`
-   с заголовками секций, таблицы в Markdown
+   с заголовками секций, таблицы в Markdown, картинки как `[Изображение]`
 8. Для проверки debounce: `python -m reindex`, затем добавить/заменить файл —
    коллекция пересоздаётся целиком
 
