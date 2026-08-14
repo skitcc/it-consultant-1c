@@ -63,6 +63,18 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=512, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=150, alias="CHUNK_OVERLAP")
 
+    # --- reindex picture description (Docling enrichment via Ollama VLM) ---
+    picture_description_enabled: bool = Field(
+        default=True,
+        alias="PICTURE_DESCRIPTION_ENABLED",
+    )
+    vlm_model: str = Field(default="qwen3-vl:8b", alias="VLM_MODEL")
+    vlm_timeout_sec: float = Field(default=90.0, alias="VLM_TIMEOUT_SEC")
+    picture_area_threshold: float = Field(
+        default=0.02,
+        alias="PICTURE_AREA_THRESHOLD",
+    )
+
     # --- reindex ---
     watch_path: str = Field(
         default="/var/lib/it-consultant/db",
