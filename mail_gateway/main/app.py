@@ -41,7 +41,7 @@ def build_reranker(settings: Settings) -> Reranker:
     if not settings.rerank_enabled:
         logger.info("RERANK_ENABLED=false — using vector-score order")
         return ScorePassthroughReranker()
-    base_url = settings.ollama_base_url
+    base_url = settings.rerank_base_url or settings.ollama_base_url
     logger.info(
         "Reranker enabled base_url=%s model=%s",
         base_url,

@@ -57,7 +57,10 @@ class Settings(BaseSettings):
     )
     rag_neighbor_window: int = Field(default=1, alias="RAG_NEIGHBOR_WINDOW")
     rerank_enabled: bool = Field(default=True, alias="RERANK_ENABLED")
-    rerank_model: str = Field(default="bge-reranker-v2-m3", alias="RERANK_MODEL")
+    rerank_model: str = Field(
+        default="dengcao/Qwen3-Reranker-8B:Q8_0",
+        alias="RERANK_MODEL",
+    )
     rerank_base_url: str | None = Field(default=None, alias="RERANK_BASE_URL")
     rerank_timeout_sec: float = Field(default=60.0, alias="RERANK_TIMEOUT_SEC")
     chunk_size: int = Field(default=512, alias="CHUNK_SIZE")
