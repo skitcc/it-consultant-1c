@@ -106,7 +106,7 @@ def run(
         watch_path=str(watch),
         debounce_seconds=cfg.debounce_seconds,
     )
-    handler = ChangeHandler(on_change=debouncer.notify)
+    handler = ChangeHandler(str(watch), debouncer.notify)
     observer = create_observer(str(watch), handler)
 
     stop_event = threading.Event()

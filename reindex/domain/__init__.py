@@ -1,3 +1,4 @@
+from reindex.domain.changes import FsChange
 from reindex.domain.documents import (
     iter_document_files,
     parse_index_extensions,
@@ -11,6 +12,7 @@ __all__ = [
     "SUPPORTED_SUFFIXES",
     "TEXT_SUFFIXES",
     "DocumentChunk",
+    "FsChange",
     "iter_document_files",
     "parse_index_extensions",
     "resolve_index_extensions",

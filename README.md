@@ -213,10 +213,18 @@ tests/reindex/
 
 ## Поток
 
-1. При старте (и при `--once`) — полный reindex каталога.
+1. При старте (и при `--once`) — **сверка** каталога с Qdrant по SHA-256 содержимого
+   файлов (коллекция не пересоздаётся). Уже проиндексированные без изменений
+   пропускаются; файлы, которых нет на диске, снимаются из Qdrant.
 2. Без `--once`: `watchdog` рекурсивно наблюдает `WATCH_PATH`.
-3. События create / modify / delete / move сбрасывают debounce-таймер.
-4. После `DEBOUNCE_SECONDS` тишины — снова полный reindex в коллекцию Qdrant.
+3. События create / modify / delete / move копятся с debounce
+   (`opened`/`closed` от чтения файлов игнорируются). Пока идёт проход,
+   новые события ждут и применяются одним батчем — параллельных проходов нет.
+4. После `DEBOUNCE_SECONDS` тишины индексируется **только затронутый файл**
+   (create/modify), если его содержимое изменилось; байт-в-байт копии в других
+   папках не эмбеддятся повторно (в индексе остаётся первый путь по сортировке).
+   Delete снимает точки этого `source_path`; если удалён канонический файл,
+   следующая копия с тем же хешем поднимается в индекс.
 5. Ошибка в indexer логируется; сервис продолжает работать (`--once` пробрасывает ошибку).
 
 ## Конфиг (через общий `.env`)
@@ -270,14 +278,17 @@ Python — в WSL, Qdrant и Ollama — Docker Desktop (`localhost:6333` / `1143
 6. `python -m reindex --once` — в логе `Qdrant reindex done ... points=N`
 7. Дашборд: http://127.0.0.1:6333/dashboard — коллекция `docs`, payload `text`
    с заголовками секций, таблицы в Markdown, картинки как `[Изображение]`
-8. Для проверки debounce: `python -m reindex`, затем добавить/заменить файл —
-   коллекция пересоздаётся целиком
+8. Для проверки watcher: `python -m reindex`, затем добавить/заменить/удалить
+   файл — в логе `apply_changes` только для этого пути, коллекция не
+   пересоздаётся
 
 ## Indexer
 
 По умолчанию используется `QdrantIndexer`. Stub `LoggingIndexer` остаётся для тестов.
-Payload точки: `text`, `source_path`, `chunk_index` (совместимо с RAG), плюс
-`headings` и `file_hash`.
+На старте / `--once` — reconcile по SHA-256 (skip неизменённых, dedup копий 1:1).
+Watcher вызывает `apply_changes`: upsert одного изменившегося файла или delete по
+`source_path`. Payload точки: `text`, `source_path`, `chunk_index` (совместимо с RAG),
+плюс `headings` и `file_hash` (SHA-256 содержимого).
 
 ## Тесты
 
@@ -285,7 +296,7 @@ Payload точки: `text`, `source_path`, `chunk_index` (совместимо �
 pytest tests/reindex tests/common tests/deploy
 ```
 
-Интеграционные тесты поднимают настоящий watcher на временном каталоге и проверяют create/modify/delete/move, вложенные пути, debounce и устойчивость к исключениям indexer. Тесты деплоя ставят сервисы в фейковый root (`--dest-dir`), без `systemctl` и без записи в настоящий `/etc`.
+Интеграционные тесты поднимают настоящий watcher на временном каталоге и проверяют create/modify/delete/move по конкретным путям, debounce-батч и устойчивость к исключениям indexer. Тесты деплоя ставят сервисы в фейковый root (`--dest-dir`), без `systemctl` и без записи в настоящий `/etc`.
 
 ## systemd
 
