@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class OllamaEmbedder:
-    """Calls Ollama ``/api/embeddings`` and returns a dense vector."""
+    """Calls Ollama ``/api/embed`` and returns a dense vector."""
 
     def __init__(
         self,
@@ -40,10 +40,36 @@ class OllamaEmbedder:
             response.raise_for_status()
             data = response.json()
 
-        embedding = data.get("embedding") if isinstance(data, dict) else None
-        if not isinstance(embedding, list) or not embedding:
-            raise RuntimeError(f"Ollama returned no embedding: {data!r}")
-        return [float(x) for x in embedding]
+        embedding = _vector_from_ollama(data)
+        if embedding is None:
+            keys = list(data) if isinstance(data, dict) else type(data).__name__
+            raise RuntimeError(f"Ollama returned no embedding; keys={keys}")
+        return embedding
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self.embed(text) for text in texts]
+
+
+def _vector_from_ollama(data: object) -> list[float] | None:
+    """Accept both ``embedding`` (legacy) and ``embeddings`` (``/api/embed``)."""
+    if not isinstance(data, dict):
+        return None
+    embedding = data.get("embedding")
+    parsed = _as_vector(embedding)
+    if parsed is not None:
+        return parsed
+    embeddings = data.get("embeddings")
+    if isinstance(embeddings, list) and embeddings:
+        return _as_vector(embeddings[0])
+    return None
+
+
+def _as_vector(value: object) -> list[float] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    if isinstance(value[0], list):
+        return _as_vector(value[0])
+    try:
+        return [float(x) for x in value]
+    except (TypeError, ValueError):
+        return None
