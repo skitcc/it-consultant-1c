@@ -4,6 +4,7 @@
 # Production (needs root):
 #   sudo ./deploy/install.sh
 #   sudo ./deploy/install.sh --enable
+#   sudo ./deploy/install.sh --only reindex --enable
 #   sudo ./deploy/install.sh --undeploy
 #
 # Safe fake-root (no systemd, no user creation, does not touch host /):
@@ -34,6 +35,8 @@ LAYOUT_ONLY=0
 ENABLE=0
 CREATE_USER=1
 UNDEPLOY=0
+# empty | reindex | mail-gateway  (empty = enable it-consultant.target)
+ONLY=""
 # configure: auto | yes | no  (auto = prompt when stdin is a TTY)
 CONFIGURE=auto
 PYTHON="${PYTHON:-python3}"
@@ -45,9 +48,13 @@ Usage: deploy/install.sh [options]
 Options:
   --dest-dir DIR   Install/undeploy under DIR as fake root (sets DESTDIR).
                    Skips systemctl and useradd/userdel. Safe for local/CI tests.
-  --layout-only    Create dirs, .env, systemd units only (no venv/pip).
-  --enable         systemctl daemon-reload && enable --now it-consultant.target
-                   (ignored when --dest-dir is set).
+  --layout-only    Create dirs, .env, systemd units only (no copy/venv/pip).
+  --only NAME      Enable/start only one service: reindex or mail-gateway.
+                   Still copies the app, creates venv, and installs all units
+                   and extras (.[reindex]). Ignored with --undeploy.
+  --enable         systemctl daemon-reload && enable --now
+                   it-consultant.target (or NAME.service when --only is set).
+                   Ignored when --dest-dir is set.
   --undeploy       Stop/disable units, remove app/env/data/units and service
                    user (production). With --dest-dir only removes the fake tree.
   --configure      Prompt for every variable from .env.example (Enter keeps
@@ -76,6 +83,18 @@ while [[ $# -gt 0 ]]; do
     --layout-only)
       LAYOUT_ONLY=1
       shift
+      ;;
+    --only)
+      ONLY="${2:?--only requires a service name (reindex|mail-gateway)}"
+      case "${ONLY}" in
+        reindex|mail-gateway) ;;
+        *)
+          echo "install: --only must be reindex or mail-gateway (got: ${ONLY})" >&2
+          usage >&2
+          exit 2
+          ;;
+      esac
+      shift 2
       ;;
     --enable)
       ENABLE=1
@@ -311,10 +330,27 @@ install_layout() {
     "$(root /etc/systemd/system)/"
 }
 
+copy_app_sources() {
+  local dest
+  dest="$(root "${OPT_DIR}")"
+  mkdir -p "${dest}"
+  log "copying application sources to ${OPT_DIR}"
+  local item
+  for item in pyproject.toml README.md LICENSE common mail_gateway reindex; do
+    if [[ -e "${REPO_ROOT}/${item}" ]]; then
+      rm -rf "${dest}/${item}"
+      cp -a "${REPO_ROOT}/${item}" "${dest}/"
+    fi
+  done
+}
+
 install_venv() {
   require_cmd "${PYTHON}"
-  local venv_dir
-  venv_dir="$(root "${OPT_DIR}/.venv")"
+  copy_app_sources
+
+  local venv_dir dest
+  dest="$(root "${OPT_DIR}")"
+  venv_dir="${dest}/.venv"
   if [[ ! -x "${venv_dir}/bin/python" ]]; then
     log "creating venv at ${OPT_DIR}/.venv"
     if ! "${PYTHON}" -m venv "${venv_dir}"; then
@@ -323,7 +359,18 @@ install_venv() {
       exit 1
     fi
   fi
-  log "installing Python package into venv (mail_gateway + reindex + common)"
+
+  log "installing Python package into venv (.[reindex]: mail_gateway + reindex + common)"
+  "${venv_dir}/bin/pip" install -U pip
+  "${venv_dir}/bin/pip" install -e "${dest}[reindex]"
+}
+
+enable_unit() {
+  if [[ -n "${ONLY}" ]]; then
+    printf '%s.service' "${ONLY}"
+  else
+    printf 'it-consultant.target'
+  fi
 }
 
 fix_ownership() {
@@ -343,22 +390,35 @@ fix_ownership() {
 }
 
 enable_systemd() {
+  local unit
+  unit="$(enable_unit)"
+
   if is_fake_root; then
     log "skipping systemctl (fake root / DESTDIR)"
+    if [[ "${ENABLE}" -eq 1 ]]; then
+      log "would enable: ${unit}"
+    else
+      log "units installed; enable later with: systemctl enable --now ${unit}"
+    fi
     return 0
   fi
   if [[ "${ENABLE}" -ne 1 ]]; then
-    log "units installed; enable later with: systemctl enable --now it-consultant.target"
+    log "units installed; enable later with: systemctl enable --now ${unit}"
     return 0
   fi
   if [[ "$(id -u)" -ne 0 ]]; then
     echo "install: --enable requires root" >&2
     exit 1
   fi
-  require_cmd systemctl
-  log "daemon-reload and enable --now it-consultant.target"
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "install: systemctl not found (WSL without systemd?)" >&2
+    echo "install: start manually, e.g.:" >&2
+    echo "  sudo -u ${SERVICE_USER} ${OPT_DIR}/.venv/bin/python -m reindex" >&2
+    exit 1
+  fi
+  log "daemon-reload and enable --now ${unit}"
   systemctl daemon-reload
-  systemctl enable --now it-consultant.target
+  systemctl enable --now "${unit}"
 }
 
 stop_systemd() {

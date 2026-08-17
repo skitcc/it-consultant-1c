@@ -87,6 +87,35 @@ def test_layout_only_preserves_existing_env(fake_root: Path) -> None:
 def test_install_does_not_invoke_systemctl(fake_root: Path) -> None:
     result = _run_install(fake_root, "--layout-only", "--enable")
     assert "skipping systemctl" in result.stdout
+    assert "would enable: it-consultant.target" in result.stdout
+
+
+def test_only_reindex_enables_reindex_unit(fake_root: Path) -> None:
+    result = _run_install(fake_root, "--layout-only", "--only", "reindex", "--enable")
+    assert "skipping systemctl" in result.stdout
+    assert "would enable: reindex.service" in result.stdout
+    units = fake_root / "etc" / "systemd" / "system"
+    assert (units / "reindex.service").is_file()
+    assert (units / "mail-gateway.service").is_file()
+    assert (units / "it-consultant.target").is_file()
+
+
+def test_only_mail_gateway_enables_mail_unit(fake_root: Path) -> None:
+    result = _run_install(fake_root, "--layout-only", "--only", "mail-gateway")
+    assert "enable later with: systemctl enable --now mail-gateway.service" in result.stdout
+    assert "would enable:" not in result.stdout
+
+
+def test_only_rejects_unknown_service(fake_root: Path) -> None:
+    result = subprocess.run(
+        [str(INSTALL_SH), "--dest-dir", str(fake_root), "--layout-only", "--only", "foo"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "reindex or mail-gateway" in result.stderr
 
 
 def test_undeploy_removes_fake_root_tree(fake_root: Path) -> None:
@@ -252,6 +281,8 @@ def test_full_install_venv_and_smoke_reindex(fake_root: Path, tmp_path: Path) ->
 
     venv_python = fake_root / "opt" / "it-consultant" / ".venv" / "bin" / "python"
     assert venv_python.is_file()
+    assert (fake_root / "opt" / "it-consultant" / "pyproject.toml").is_file()
+    assert (fake_root / "opt" / "it-consultant" / "reindex").is_dir()
 
     # Smoke: packages importable from the installed venv.
     subprocess.run(
