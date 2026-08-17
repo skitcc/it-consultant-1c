@@ -41,6 +41,10 @@ cp .env.example .env
 # на TTY спросит все переменные из .env.example (Enter — оставить текущее)
 sudo ./deploy/install.sh --enable
 
+# тот же install (код, venv, все зависимости .[reindex], все unit’ы),
+# но enable/start только reindex (mail-gateway не запускается):
+sudo ./deploy/install.sh --only reindex --enable
+
 # только разложить файлы, без enable:
 sudo ./deploy/install.sh
 sudo systemctl daemon-reload
@@ -50,7 +54,7 @@ sudo systemctl enable --now it-consultant.target
 sudo ./deploy/install.sh --undeploy
 ```
 
-`enable it-consultant.target` создаёт symlink’и в `multi-user.target.wants` и (через `Also=`) подтягивает `mail-gateway` и `reindex`.
+`enable it-consultant.target` создаёт symlink’и в `multi-user.target.wants` и (через `Also=`) подтягивает `mail-gateway` и `reindex`. `--only reindex` (или `--only mail-gateway`) всё равно копирует приложение в `/opt/it-consultant` и ставит полный venv, но включает только выбранный unit.
 
 При интерактивном запуске (stdin — TTY) скрипт парсит все `KEY=` из [`.env.example`](.env.example) (включая закомментированные опциональные) и спрашивает каждое значение. Пустой ввод (Enter) оставляет значение как в `.env` (или из `.env.example` при первой установке); для опциональных ключей, которых ещё нет в `.env`, Enter ничего не добавляет. Пароли/секреты (`*PASSWORD*`, `*SECRET*`, `*TOKEN*`) вводятся скрыто. Для CI / скриптов: `--no-configure` (или просто не-TTY — вопросы пропускаются); принудительно спросить даже без TTY: `--configure`.
 
@@ -150,7 +154,8 @@ pytest
 ## Контракт Ollama
 
 Шлюз подтягивает тред из Exchange, чистит тела, достаёт кандидатов из Qdrant,
-переранжирует их (если доступен `/api/rerank` или `/v1/rerank`), дополняет соседними
+переранжирует их через Ollama `POST /api/chat` (`RERANK_MODEL` = Qwen3-Reranker:
+Instruct/Query/Document → `yes`/`no` или P(yes) из logprobs), дополняет соседними
 чанками и логирует внутренний payload:
 
 ```json
@@ -202,7 +207,7 @@ mail_gateway/adapters/rag/
   reranking_retriever.py
 common/
   embeddings.py       # OllamaEmbedder (/api/embeddings)
-deploy/               # install.sh / install-reindex.sh + systemd units
+deploy/               # install.sh + systemd units
 tests/reindex/
 ```
 
@@ -226,7 +231,7 @@ tests/reindex/
 | `RAG_CANDIDATES` | Сколько кандидатов брать из Qdrant | `20` |
 | `RAG_TOP_K` | Сколько чанков оставить после rerank | `8` |
 | `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
-| `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama-compatible API | `true` / `bge-reranker-v2-m3` |
+| `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama `POST /api/chat` (Qwen3 yes/no) | `true` / `dengcao/Qwen3-Reranker-8B:Q8_0` |
 | `CHUNK_SIZE` | Max tokens для HybridChunker | `512` |
 | `PICTURE_DESCRIPTION_ENABLED` | VLM-описания картинок (enrichment) | `true` |
 | `VLM_MODEL` | Vision-модель в том же Ollama | `qwen3-vl:8b` |
@@ -284,4 +289,4 @@ pytest tests/reindex tests/common tests/deploy
 
 ## systemd
 
-Unit-файлы: [`deploy/systemd/`](deploy/systemd/). Установка и снятие — через [`deploy/install.sh`](deploy/install.sh) (`--enable` / `--undeploy`, см. раздел «Установка на сервер» выше). Для только reindex — [`deploy/install-reindex.sh`](deploy/install-reindex.sh).
+Unit-файлы: [`deploy/systemd/`](deploy/systemd/). Установка и снятие — через [`deploy/install.sh`](deploy/install.sh) (`--enable` / `--only reindex` / `--undeploy`, см. раздел «Установка на сервер» выше).
