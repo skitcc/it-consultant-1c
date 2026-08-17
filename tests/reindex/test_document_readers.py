@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from reindex.adapters.document_readers import (
     CompositeDocumentReader,
     DoclingDocumentReader,
@@ -189,6 +191,33 @@ def test_chat_completions_url_uses_ollama_base() -> None:
 
 
 def test_picture_serializer_uses_annotation_and_caption() -> None:
+    from reindex.adapters.document_readers import _PictureDescriptionSerializer
+
+    item = MagicMock()
+    annotation = MagicMock()
+    annotation.text = "кнопка Провести"
+    item.annotations = [annotation]
+    item.caption_text = lambda doc=None: "Скрин формы"
+    item.self_ref = "#/pictures/0"
+    result = _PictureDescriptionSerializer().serialize(item=item, doc=None)
+    text = result if isinstance(result, str) else getattr(result, "text", "")
+    assert "[Изображение]" in text
+    assert "Описание: кнопка Провести" in text
+    assert "Подпись: Скрин формы" in text
+
+
+def test_picture_serializer_is_accepted_by_chunking_doc_serializer() -> None:
+    pytest.importorskip("docling_core")
+    from docling_core.transforms.chunker.hierarchical_chunker import ChunkingDocSerializer
+    from docling_core.types.doc.document import DoclingDocument
+
+    from reindex.adapters.document_readers import _as_base_picture_serializer
+
+    serializer = ChunkingDocSerializer(
+        doc=DoclingDocument(name="probe"),
+        picture_serializer=_as_base_picture_serializer(),
+    )
+    assert serializer.picture_serializer is not None
     from reindex.adapters.document_readers import _PictureDescriptionSerializer
 
     item = MagicMock()

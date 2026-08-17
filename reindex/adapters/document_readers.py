@@ -301,7 +301,7 @@ def _chunking_serializer_provider() -> Any | None:
     except ImportError:
         return None
 
-    picture_serializer = _PictureDescriptionSerializer()
+    picture_serializer = _as_base_picture_serializer()
 
     class MarkdownChunkSerializerProvider(ChunkingSerializerProvider):
         def get_serializer(self, doc: Any) -> Any:
@@ -317,8 +317,45 @@ def _chunking_serializer_provider() -> Any | None:
                 )
             except TypeError:
                 return ChunkingDocSerializer(**kwargs)
+            except Exception as exc:
+                # Pydantic v2 raises ValidationError (not TypeError) when the
+                # serializer is not a BasePictureSerializer instance.
+                if type(exc).__name__ != "ValidationError":
+                    raise
+                logger.warning(
+                    "ChunkingDocSerializer rejected picture_serializer (%s); "
+                    "falling back to default",
+                    exc,
+                )
+                return ChunkingDocSerializer(**kwargs)
 
     return MarkdownChunkSerializerProvider()
+
+
+def _as_base_picture_serializer() -> Any:
+    """Wrap picture serializer so Pydantic accepts it as BasePictureSerializer."""
+    try:
+        from docling_core.transforms.serializer.base import BasePictureSerializer
+    except ImportError:
+        return _PictureDescriptionSerializer()
+
+    class PictureDescriptionSerializer(BasePictureSerializer):
+        def serialize(
+            self,
+            *,
+            item: Any,
+            doc_serializer: Any = None,
+            doc: Any = None,
+            **kwargs: Any,
+        ) -> Any:
+            return _PictureDescriptionSerializer().serialize(
+                item=item,
+                doc_serializer=doc_serializer,
+                doc=doc,
+                **kwargs,
+            )
+
+    return PictureDescriptionSerializer()
 
 
 class _PictureDescriptionSerializer:
