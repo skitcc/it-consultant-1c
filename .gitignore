@@ -18,3 +18,4 @@ data/
 .vscode/
 *.log
 tmp.txt
+.cursor
