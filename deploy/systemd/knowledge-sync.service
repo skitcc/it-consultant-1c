@@ -1,8 +1,8 @@
 [Unit]
-Description=IT Consultant mail gateway (Exchange EWS)
+Description=IT Consultant Open WebUI Knowledge synchronizer
 Documentation=file:///opt/it-consultant
 After=network-online.target api-gateway.service
-Wants=network-online.target api-gateway.service
+Wants=network-online.target
 PartOf=it-consultant.target
 
 [Service]
@@ -11,13 +11,13 @@ User=it-consultant
 Group=it-consultant
 WorkingDirectory=/opt/it-consultant
 EnvironmentFile=-/etc/it-consultant/.env
-ExecStart=/opt/it-consultant/.venv/bin/python -m mail_gateway
+ExecStart=/opt/it-consultant/.venv/bin/python -m knowledge_sync
 Restart=on-failure
 RestartSec=5
 
-# Hardening (safe defaults; adjust if Exchange/certs need more)
 NoNewPrivileges=true
 PrivateTmp=true
+ReadWritePaths=/var/lib/it-consultant
 
 [Install]
 WantedBy=it-consultant.target

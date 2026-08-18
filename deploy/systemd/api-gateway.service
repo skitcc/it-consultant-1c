@@ -1,5 +1,5 @@
 [Unit]
-Description=IT Consultant file-based DB reindex service
+Description=IT Consultant RAG API Gateway
 Documentation=file:///opt/it-consultant
 After=network-online.target
 Wants=network-online.target
@@ -11,16 +11,13 @@ User=it-consultant
 Group=it-consultant
 WorkingDirectory=/opt/it-consultant
 EnvironmentFile=-/etc/it-consultant/.env
-ExecStart=/opt/it-consultant/.venv/bin/python -m reindex
+ExecStart=/opt/it-consultant/.venv/bin/python -m api_gateway
 Restart=on-failure
 RestartSec=5
 
 NoNewPrivileges=true
 PrivateTmp=true
-
-# Allow reading/writing the watched DB directory
 ReadWritePaths=/var/lib/it-consultant
 
 [Install]
-WantedBy=multi-user.target
 WantedBy=it-consultant.target

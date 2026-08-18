@@ -1,8 +1,8 @@
 [Unit]
 Description=IT Consultant services
 Documentation=file:///opt/it-consultant
-Wants=mail-gateway.service reindex.service
+Wants=api-gateway.service knowledge-sync.service mail-gateway.service
 
 [Install]
 WantedBy=multi-user.target
-Also=mail-gateway.service reindex.service
+Also=api-gateway.service knowledge-sync.service mail-gateway.service

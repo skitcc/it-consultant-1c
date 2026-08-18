@@ -19,18 +19,73 @@ services:
     restart: unless-stopped
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: ghcr.io/open-webui/open-webui:v0.11.0
     ports:
       - "3000:8080"
     environment:
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - WEBUI_AUTH=false
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_AUTH: "true"
+      CONTENT_EXTRACTION_ENGINE: external
+      EXTERNAL_DOCUMENT_LOADER_URL: http://api-gateway:8000
+      EXTERNAL_DOCUMENT_LOADER_API_KEY: ${OWUI_LOADER_KEY:?set OWUI_LOADER_KEY in .env}
+      EXTERNAL_DOCUMENT_LOADER_HEADERS: '{"X-OpenWebUI-File-Id":"{{FILE_ID}}","X-OpenWebUI-File-Name":"{{FILE_NAME}}"}'
+      BYPASS_EMBEDDING_AND_RETRIEVAL: "true"
+      ENABLE_RAG_HYBRID_SEARCH: "false"
+      OPENAI_API_BASE_URLS: http://api-gateway:8000/v1
+      OPENAI_API_KEYS: ${API_GATEWAY_API_KEY:?set API_GATEWAY_API_KEY in .env}
     volumes:
       - open-webui:/app/backend/data
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_GATEWAY_HOST: 0.0.0.0
+      OLLAMA_BASE_URL: http://ollama:11434
+      QDRANT_URL: http://qdrant:6333
+      DOCUMENT_REGISTRY_PATH: /var/lib/it-consultant/registry.sqlite3
+    ports:
+      - "8000:8000"
+    volumes:
+      - registry_data:/var/lib/it-consultant
+    depends_on:
+      - ollama
+      - qdrant
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  knowledge-sync:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    command: ["python", "-m", "knowledge_sync"]
+    env_file:
+      - .env
+    environment:
+      OPEN_WEBUI_BASE_URL: http://open-webui:8080
+      OLLAMA_BASE_URL: http://ollama:11434
+      QDRANT_URL: http://qdrant:6333
+      DOCUMENT_REGISTRY_PATH: /var/lib/it-consultant/registry.sqlite3
+    volumes:
+      - registry_data:/var/lib/it-consultant
+    depends_on:
+      open-webui:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
   ollama_data:
   qdrant_data:
   open-webui:
+  registry_data:

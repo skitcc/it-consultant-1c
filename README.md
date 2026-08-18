@@ -1,306 +1,201 @@
 # IT Consultant
 
-Репозиторий IT-консультанта: почтовый шлюз и сервис реиндексации файловой БД.
+Универсальный RAG-сервис для Open WebUI и Exchange:
+
+```text
+Open WebUI ─┐
+            ├─> API Gateway ─> Knowledge Core ─> Qdrant / Ollama
+Exchange ───┘
+
+Open WebUI Knowledge ─> knowledge_sync ─> Knowledge Core
+```
 
 ## Компоненты
 
-| Пакет | Назначение |
-|-------|------------|
-| `common` | Общие настройки (`Settings`) и утилиты |
-| `mail_gateway` | Exchange (EWS Streaming) → Qdrant RAG → Ollama → reply |
-| `reindex` | Следит за каталогом документов и индексирует их в Qdrant |
+- `knowledge/core` — независимые domain models, ports и use cases.
+- `knowledge/adapters` — Docling, Ollama, Qdrant и SQLite.
+- `api_gateway` — `/process` и OpenAI-compatible RAG chat.
+- `knowledge_sync` — инкрементальная сверка одной OWUI Knowledge-базы.
+- `mail_gateway` — EWS transport, вызывающий API Gateway.
 
-Общий конфиг — один класс [`common.Settings`](common/settings.py), читается из `.env` / переменных окружения. Оба сервиса используют одни и те же переменные.
+Folder watcher и сервис `reindex` удалены. Новый документ индексируется синхронно
+во время `PUT /process`; sync-сервис обрабатывает пропущенные upload, update,
+rename и delete. Обычное изменение никогда не пересоздаёт Qdrant collection и
+затрагивает только points конкретного `document_id`.
 
-## Установка (разработка)
+## Целостность upload
+
+Open WebUI External Document Loader читает сохранённый файл в binary mode и
+отправляет raw HTTP body. Gateway принимает body как `bytes`, а Docling adapter:
+
+1. вычисляет SHA-256 полученных bytes;
+2. записывает их без преобразований во временный файл с исходным suffix;
+3. повторно вычисляет SHA-256 временного файла;
+4. вызывает `DocumentConverter` только при совпадении hashes.
+
+JSON/base64 и декодирование документа в этой цепочке не используются.
+
+## Локальная установка
+
+Все Python-команды выполняются через `.venv`:
 
 ```bash
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -e ".[dev]"
-# для reindex также (CPU torch, без CUDA-колёс):
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-pip install -e ".[reindex,dev]"
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install \
+  --index-url https://download.pytorch.org/whl/cpu \
+  torch torchvision
+.venv/bin/python -m pip install -e ".[api,dev]"
 cp .env.example .env
 ```
 
-Заполните в `.env` поля `EWS_*` (и при необходимости `WATCH_PATH` / `DEBOUNCE_SECONDS`).
+Docling использует CPU PyTorch. CUDA wheels не нужны на CPU-сервере.
 
-## Установка на сервер (systemd)
+## Настройка Open WebUI
 
-Скрипт [`deploy/install.sh`](deploy/install.sh) раскладывает дерево:
+Создайте одну Knowledge-базу и сохраните её ID в:
 
-| Путь | Содержимое |
-|------|------------|
-| `/opt/it-consultant/.venv` | Python-окружение и пакеты |
-| `/etc/it-consultant/.env` | секреты и настройки (из `.env.example`) |
-| `/var/lib/it-consultant/db` | каталог файловой БД (`WATCH_PATH`) |
-| `/etc/systemd/system/*.service` | unit-файлы + `it-consultant.target` |
-
-```bash
-# боевая установка (нужен root; создаёт user it-consultant и venv)
-# на TTY спросит все переменные из .env.example (Enter — оставить текущее)
-sudo ./deploy/install.sh --enable
-
-# тот же install (код, venv, все зависимости .[reindex], все unit’ы),
-# но enable/start только reindex (mail-gateway не запускается):
-sudo ./deploy/install.sh --only reindex --enable
-
-# только разложить файлы, без enable:
-sudo ./deploy/install.sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now it-consultant.target
-
-# снять установку (stop/disable units, удалить app/env/data/units и user)
-sudo ./deploy/install.sh --undeploy
+```dotenv
+OPEN_WEBUI_KNOWLEDGE_ID=<knowledge-id>
+OPEN_WEBUI_SYNC_TOKEN=<service-account-api-token>
 ```
 
-`enable it-consultant.target` создаёт symlink’и в `multi-user.target.wants` и (через `Also=`) подтягивает `mail-gateway` и `reindex`. `--only reindex` (или `--only mail-gateway`) всё равно копирует приложение в `/opt/it-consultant` и ставит полный venv, но включает только выбранный unit.
+В Admin → Documents:
 
-При интерактивном запуске (stdin — TTY) скрипт парсит все `KEY=` из [`.env.example`](.env.example) (включая закомментированные опциональные) и спрашивает каждое значение. Пустой ввод (Enter) оставляет значение как в `.env` (или из `.env.example` при первой установке); для опциональных ключей, которых ещё нет в `.env`, Enter ничего не добавляет. Пароли/секреты (`*PASSWORD*`, `*SECRET*`, `*TOKEN*`) вводятся скрыто. Для CI / скриптов: `--no-configure` (или просто не-TTY — вопросы пропускаются); принудительно спросить даже без TTY: `--configure`.
-
-`--undeploy` останавливает и отключает `it-consultant.target` (и связанные unit’ы), удаляет `/opt/it-consultant`, `/etc/it-consultant`, `/var/lib/it-consultant`, unit-файлы из `/etc/systemd/system/` и системного пользователя/группу `it-consultant`.
-
-`install.sh` перед Docling ставит CPU-сборку PyTorch (`https://download.pytorch.org/whl/cpu`), без CUDA-колёс. На CPU-сервере пайплайн тот же, меняется только размер/тип wheel. Переопределение индекса: `TORCH_CPU_INDEX=...`.
-
-### Безопасная проверка без трогания host rootfs
-
-Никогда не гоняйте «тестовый» install в `/` без `--dest-dir`. Используйте фейковый root:
-
-```bash
-./deploy/install.sh --dest-dir /tmp/itc-root --layout-only
-# дерево только под /tmp/itc-root/... ; systemctl и useradd не вызываются
-
-./deploy/install.sh --dest-dir /tmp/itc-root   # + venv/pip внутрь /tmp/...
-
-./deploy/install.sh --dest-dir /tmp/itc-root --undeploy  # снять только фейковое дерево
-
-# неинтерактивно подставить первые переменные (остальные — Enter / EOF = defaults):
-printf '%s\n' 'mail.example.com' 'bot@example.com' 'DOMAIN\bot' 'secret' \
-  | ./deploy/install.sh --dest-dir /tmp/itc-root --layout-only --configure
+```text
+Content Extraction Engine: external
+External Loader URL: http://api-gateway:8000
+External Loader API Key: значение OWUI_LOADER_KEY
+Bypass Embedding and Retrieval: enabled
+Hybrid Search: disabled
 ```
 
-Автотесты (тоже через `--dest-dir` во временный каталог):
-
-```bash
-pytest tests/deploy -q          # layout, undeploy, configure, содержимое unit-файлов
-pytest tests/deploy -q -m slow  # полный install + smoke `python -m reindex` (нужен python3-venv)
-```
-
-Маркер `slow` пропускается, если на машине нельзя создать venv.
-
----
-
-# Mail Gateway
-
-Почтовый шлюз: Exchange (EWS Streaming) → RAG (Qdrant) → Ollama (`/api/chat`) → reply в тот же conversation.
-
-## Структура
-
-```
-common/         # Settings, logging
-mail_gateway/
-  domain/       # модели (IncomingMessage, Reply)
-  ports/        # контракты MailListener, MailSender, Assistant
-  application/  # сценарий HandleIncomingMail
-  adapters/     # реализации портов (EWS, Ollama, Qdrant RAG)
-  main/         # composition root
-tests/
-```
-
-Зависимости направлены внутрь: `adapters` → `ports`/`domain`, `application` → `ports`/`domain`.  
-Адаптеры явно наследуют порты (`class EwsMailListener(MailListener)`).
-
-## Поток
-
-1. EWS Streaming: событие `NewMail` в Inbox.
-2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
-3. Загрузка треда, очистка тел.
-4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (соседи в том же разделе по `headings`) → фрагменты в `system_prompt`.
-5. `POST` в Ollama `/api/chat`.
-6. Reply через EWS в тот же тред.
-7. При обрыве streaming — reconnect.
-
-`change_key` — версия объекта письма в Exchange. Вместе с `item_id` однозначно указывает на конкретную ревизию письма; без него `get`/`reply` могут упасть, если письмо уже изменилось.
-
-## Как протестировать самому
-
-### 1. Unit-тесты (без Exchange)
-
-```bash
-pytest
-```
-
-Проверяют сценарий «письмо → ИИ → reply» на фейковых портах.
-
-### 2. Round-trip с реальным ящиком + Ollama
-
-1. Подними сервисы:
-   ```bash
-   docker compose up -d ollama qdrant
-   ollama pull llama3.2
-   ollama pull nomic-embed-text
-   ```
-2. В `.env`:
-   - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
-   - `OLLAMA_MODEL=llama3.2`
-   - `EMBEDDING_MODEL=nomic-embed-text`
-   - `QDRANT_URL=http://127.0.0.1:6333`
-   - рабочие `EWS_*`
-3. Проиндексируйте документы (`WATCH_PATH`) через `python -m reindex --once`.
-4. Запуск шлюза:
-   ```bash
-   python -m mail_gateway
-   ```
-5. Напишите письмо на ящик бота. В логах будет `Assistant payload` (с `system_prompt` и фрагментами документации) и ответ модели.
-
-## Контракт Ollama
-
-Шлюз подтягивает тред из Exchange, чистит тела, достаёт кандидатов из Qdrant,
-переранжирует их через Ollama `POST /api/chat` (`RERANK_MODEL` = Qwen3-Reranker:
-Instruct/Query/Document → `yes`/`no` или P(yes) из logprobs), дополняет соседними
-чанками и логирует внутренний payload:
+Custom headers:
 
 ```json
 {
-  "conversation_id": "...",
-  "system_prompt": "Ты IT-консультант...\n\nРелевантные фрагменты документации:\n[1] source=guide.md\n...",
-  "messages": [
-    {"role": "user", "body": "test"},
-    {"role": "assistant", "body": "ответ"},
-    {"role": "user", "body": "уточнение"}
-  ]
+  "X-OpenWebUI-File-Id": "{{FILE_ID}}",
+  "X-OpenWebUI-File-Name": "{{FILE_NAME}}"
 }
 ```
 
-В Ollama уходит `POST /api/chat` с `messages`: `system` + история `user`/`assistant`
-(`body` → `content`). Системный промпт можно переопределить через `AI_SYSTEM_PROMPT`.
-Модель с Qdrant напрямую не общается — retrieval делает `mail_gateway`.
+В Admin → Connections → OpenAI:
 
----
-
-# Reindex
-
-Сервис следит за каталогом документации (`WATCH_PATH`) и после паузы без новых
-событий индексирует файлы в Qdrant: Docling convert → HybridChunker → Ollama
-embeddings → upsert.
-
-Поддерживаемые типы: `.txt`, `.md`, `.markdown`, `.rst`, `.log`, `.csv`, `.pdf`,
-`.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm` (`pip install -e ".[reindex]"`).
-Ридер возвращает семантические чанки Docling (`HybridChunker` + `contextualize`),
-с заголовками секций и таблицами в Markdown. OCR для PDF выключен.
-
-Картинки не гоняются через VLM-pipeline на всю страницу. Это **enrichment**:
-обычный convert, затем Ollama VLM (`VLM_MODEL` на том же `OLLAMA_BASE_URL`)
-описывает вырезанные рисунки. В чанк вместо `<!-- image -->` попадает блок
-`[Изображение]` с описанием и подписью. HybridChunker и RAG не меняются.
-
-## Структура
-
-```
-reindex/
-  domain/             # DocumentChunk, суффиксы, обход файлов
-  ports/              # DocumentReader, Indexer, Embedder
-  adapters/           # Docling HybridChunker, QdrantIndexer, LoggingIndexer
-  watcher.py          # watchdog + DebouncedReindex
-  service.py          # composition root и run loop
-mail_gateway/adapters/rag/
-  qdrant_retriever.py
-  ollama_reranker.py
-  reranking_retriever.py
-common/
-  embeddings.py       # OllamaEmbedder (/api/embeddings)
-deploy/               # install.sh + systemd units
-tests/reindex/
+```text
+Base URL: http://api-gateway:8000/v1
+API Key: значение API_GATEWAY_API_KEY
 ```
 
-## Поток
+Gateway показывает одну виртуальную модель `it-consultant`. Она представляет
+полный pipeline retrieval → rerank → prompt → Ollama. Прямые модели Ollama
+остаются отдельными моделями без этого RAG.
 
-1. При старте (и при `--once`) — **сверка** каталога с Qdrant по SHA-256 содержимого
-   файлов (коллекция не пересоздаётся). Уже проиндексированные без изменений
-   пропускаются; файлы, которых нет на диске, снимаются из Qdrant.
-2. Без `--once`: `watchdog` рекурсивно наблюдает `WATCH_PATH`.
-3. События create / modify / delete / move копятся с debounce
-   (`opened`/`closed` от чтения файлов игнорируются). Пока идёт проход,
-   новые события ждут и применяются одним батчем — параллельных проходов нет.
-4. После `DEBOUNCE_SECONDS` тишины индексируется **только затронутый файл**
-   (create/modify), если его содержимое изменилось; байт-в-байт копии в других
-   папках не эмбеддятся повторно (в индексе остаётся первый путь по сортировке).
-   Delete снимает точки этого `source_path`; если удалён канонический файл,
-   следующая копия с тем же хешем поднимается в индекс.
-5. Ошибка в indexer логируется; сервис продолжает работать (`--once` пробрасывает ошибку).
+Filter Function из `integrations/open_webui/it_consultant_filter.py` необходимо
+прикрепить только к модели `it-consultant`. Его `file_handler = True` запрещает
+Open WebUI добавлять собственный RAG-контекст.
 
-## Конфиг (через общий `.env`)
+## API Gateway
 
-| Переменная | Описание | По умолчанию |
-|------------|----------|--------------|
-| `WATCH_PATH` | Каталог документов (должен существовать) | `/var/lib/it-consultant/db` |
-| `DEBOUNCE_SECONDS` | Пауза перед реиндексацией | `1.0` |
-| `QDRANT_URL` | HTTP API Qdrant | `http://127.0.0.1:6333` |
-| `QDRANT_COLLECTION` | Имя коллекции | `docs` |
-| `EMBEDDING_MODEL` | Модель embeddings в Ollama | `nomic-embed-text` |
-| `RAG_CANDIDATES` | Сколько кандидатов брать из Qdrant | `20` |
-| `RAG_TOP_K` | Сколько чанков оставить после rerank | `8` |
-| `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
-| `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama `POST /api/chat` (Qwen3 yes/no) | `true` / `dengcao/Qwen3-Reranker-8B:Q8_0` |
-| `CHUNK_SIZE` | Max tokens для HybridChunker | `512` |
-| `PICTURE_DESCRIPTION_ENABLED` | VLM-описания картинок (enrichment) | `true` |
-| `VLM_MODEL` | Vision-модель в том же Ollama | `qwen3-vl:8b` |
-| `VLM_TIMEOUT_SEC` | Таймаут описания одной картинки | `90` |
-| `PICTURE_AREA_THRESHOLD` | Мин. доля площади страницы для VLM | `0.02` |
-| `LOG_LEVEL` | Уровень логов | `INFO` |
+Минимальный внешний API:
 
-`CHUNK_OVERLAP` в `.env` игнорируется reindex (соседей склеивает `merge_peers`).
-Плюс общие / mail-поля из [`.env.example`](.env.example). `Settings` всё равно
-требует `EWS_*` — для локального reindex достаточно заглушек.
+- `PUT /process` — OWUI External Document Loader; успех только после Qdrant.
+- `GET /v1/models` — модель `it-consultant`.
+- `POST /v1/chat/completions` — OpenAI-compatible RAG chat.
+- `GET /health` — liveness.
+- `GET /ready` — readiness инфраструктуры.
 
-## Запуск
+Отдельных document-management и retrieve endpoints нет.
+
+## Knowledge sync
+
+`knowledge_sync` получает metadata всех файлов Knowledge, но скачивает и
+индексирует только:
+
+- новый file ID, отсутствующий в registry;
+- файл с изменившимся hash;
+- файл, callback которого был пропущен во время downtime.
+
+Неизменённые файлы не скачиваются, не парсятся и не эмбеддятся. Rename обновляет
+только Qdrant payload. Delete применяется после нескольких успешных snapshots;
+при недоступном OWUI удаления запрещены.
+
+## Mail Gateway
+
+Почтовый сервис больше не подключается к Qdrant/Ollama напрямую:
+
+```text
+EWS message
+→ clean/load thread
+→ POST API_GATEWAY_BASE_URL/chat/completions
+→ reply into the same EWS conversation
+```
+
+Обязательные параметры:
+
+```dotenv
+API_GATEWAY_BASE_URL=http://127.0.0.1:8000/v1
+API_GATEWAY_API_KEY=change-chat-key
+API_GATEWAY_MODEL=it-consultant
+```
+
+## Docker Compose
 
 ```bash
-docker compose up -d ollama qdrant
-ollama pull nomic-embed-text
-ollama pull qwen3-vl:8b   # или moondream / qwen2.5vl:3b для локальной проверки
-pip install -e ".[reindex,dev]"
-python -m reindex --once    # один проход, без watcher
-python -m reindex           # watcher
+docker compose up -d --build
 ```
 
-## Проверка на Windows
+Compose запускает Ollama, Qdrant, Open WebUI, API Gateway и knowledge sync.
+Open WebUI зафиксирован на конкретной версии вместо `:main`.
 
-Python — в WSL, Qdrant и Ollama — Docker Desktop (`localhost:6333` / `11434`
-доступны из WSL).
+Перед запуском:
 
-1. `docker compose up -d qdrant ollama`
-2. `ollama pull nomic-embed-text` и `ollama pull qwen3-vl:8b` (локально можно `VLM_MODEL=moondream`)
-3. В `.env`: заглушки `EWS_*`, `WATCH_PATH` на существующую папку
-   (из WSL: `/mnt/c/Users/.../docs`), `QDRANT_URL=http://127.0.0.1:6333`,
-   `OLLAMA_BASE_URL=http://127.0.0.1:11434`
-4. В WSL: `pip install -e ".[reindex]"` (если No space — сжать VHDX WSL;
-   конвертер идёт без OCR)
-5. Положить в `WATCH_PATH` смесь `.md`, `.txt`, `.pdf`, `.docx`, `.xlsx`
-6. `python -m reindex --once` — в логе `Qdrant reindex done ... points=N`
-7. Дашборд: http://127.0.0.1:6333/dashboard — коллекция `docs`, payload `text`
-   с заголовками секций, таблицы в Markdown, картинки как `[Изображение]`
-8. Для проверки watcher: `python -m reindex`, затем добавить/заменить/удалить
-   файл — в логе `apply_changes` только для этого пути, коллекция не
-   пересоздаётся
+1. заполните `.env`;
+2. создайте пользователя/Knowledge в OWUI;
+3. выпустите API token с доступом на чтение Knowledge;
+4. установите `OPEN_WEBUI_KNOWLEDGE_ID` и `OPEN_WEBUI_SYNC_TOKEN`;
+5. загрузите нужные модели в Ollama.
 
-## Indexer
+## Systemd deployment
 
-По умолчанию используется `QdrantIndexer`. Stub `LoggingIndexer` остаётся для тестов.
-На старте / `--once` — reconcile по SHA-256 (skip неизменённых, dedup копий 1:1).
-Watcher вызывает `apply_changes`: upsert одного изменившегося файла или delete по
-`source_path`. Payload точки: `text`, `source_path`, `chunk_index` (совместимо с RAG),
-плюс `headings` и `file_hash` (SHA-256 содержимого).
+```bash
+sudo ./deploy/install.sh --enable
+
+# Или запустить только один процесс:
+sudo ./deploy/install.sh --only api-gateway --enable
+sudo ./deploy/install.sh --only knowledge-sync --enable
+sudo ./deploy/install.sh --only mail-gateway --enable
+```
+
+Устанавливаются:
+
+```text
+/opt/it-consultant/.venv
+/etc/it-consultant/.env
+/var/lib/it-consultant/registry.sqlite3
+/etc/systemd/system/api-gateway.service
+/etc/systemd/system/knowledge-sync.service
+/etc/systemd/system/mail-gateway.service
+/etc/systemd/system/it-consultant.target
+```
+
+Fake-root проверка:
+
+```bash
+./deploy/install.sh --dest-dir /tmp/itc-root --layout-only
+./deploy/install.sh --dest-dir /tmp/itc-root --undeploy
+```
 
 ## Тесты
 
 ```bash
-pytest tests/reindex tests/common tests/deploy
+.venv/bin/python -m pytest -q
 ```
 
-Интеграционные тесты поднимают настоящий watcher на временном каталоге и проверяют create/modify/delete/move по конкретным путям, debounce-батч и устойчивость к исключениям indexer. Тесты деплоя ставят сервисы в фейковый root (`--dest-dir`), без `systemctl` и без записи в настоящий `/etc`.
+Ключевые проверки:
 
-## systemd
-
-Unit-файлы: [`deploy/systemd/`](deploy/systemd/). Установка и снятие — через [`deploy/install.sh`](deploy/install.sh) (`--enable` / `--only reindex` / `--undeploy`, см. раздел «Установка на сервер» выше).
+- binary body не изменяется между Gateway и Docling;
+- update одного документа не затрагивает остальные points;
+- ошибка новой версии сохраняет предыдущую;
+- Knowledge sync не переиндексирует неизменённые документы;
+- OWUI и mail используют один `AnswerQuestion`;
+- `knowledge/core` не импортирует инфраструктурные библиотеки.

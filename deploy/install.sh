@@ -4,7 +4,7 @@
 # Production (needs root):
 #   sudo ./deploy/install.sh
 #   sudo ./deploy/install.sh --enable
-#   sudo ./deploy/install.sh --only reindex --enable
+#   sudo ./deploy/install.sh --only api-gateway --enable
 #   sudo ./deploy/install.sh --undeploy
 #
 # Safe fake-root (no systemd, no user creation, does not touch host /):
@@ -27,9 +27,11 @@ VAR_DIR="/var/lib/it-consultant"
 SERVICE_USER="it-consultant"
 SERVICE_GROUP="it-consultant"
 UNITS=(
+  api-gateway.service
+  knowledge-sync.service
   mail-gateway.service
-  reindex.service
   it-consultant.target
+  reindex.service
 )
 
 DEST_DIR="${DESTDIR:-}"
@@ -37,7 +39,7 @@ LAYOUT_ONLY=0
 ENABLE=0
 CREATE_USER=1
 UNDEPLOY=0
-# empty | reindex | mail-gateway  (empty = enable it-consultant.target)
+# empty | api-gateway | knowledge-sync | mail-gateway
 ONLY=""
 # configure: auto | yes | no  (auto = prompt when stdin is a TTY)
 CONFIGURE=auto
@@ -52,9 +54,9 @@ Options:
   --dest-dir DIR   Install/undeploy under DIR as fake root (sets DESTDIR).
                    Skips systemctl and useradd/userdel. Safe for local/CI tests.
   --layout-only    Create dirs, .env, systemd units only (no copy/venv/pip).
-  --only NAME      Enable/start only one service: reindex or mail-gateway.
+  --only NAME      Enable/start only: api-gateway, knowledge-sync or mail-gateway.
                    Still copies the app, creates venv, and installs all units
-                   and extras (.[reindex]). Ignored with --undeploy.
+                   and API/indexing dependencies. Ignored with --undeploy.
   --enable         systemctl daemon-reload && enable --now
                    it-consultant.target (or NAME.service when --only is set).
                    Ignored when --dest-dir is set.
@@ -69,7 +71,7 @@ Options:
 Paths (always absolute on the target system; prefixed by --dest-dir when set):
   /opt/it-consultant       application + .venv
   /etc/it-consultant/.env  secrets / settings
-  /var/lib/it-consultant/db  WATCH_PATH data
+  /var/lib/it-consultant     persistent document registry
   /etc/systemd/system/     unit files
 
 Interactive configure (TTY by default, or --configure) asks for all KEY=
@@ -88,11 +90,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --only)
-      ONLY="${2:?--only requires a service name (reindex|mail-gateway)}"
+      ONLY="${2:?--only requires a service name}"
       case "${ONLY}" in
-        reindex|mail-gateway) ;;
+        api-gateway|knowledge-sync|mail-gateway) ;;
         *)
-          echo "install: --only must be reindex or mail-gateway (got: ${ONLY})" >&2
+          echo "install: unsupported --only service: ${ONLY}" >&2
           usage >&2
           exit 2
           ;;
@@ -308,16 +310,14 @@ install_layout() {
   log "creating directories under ${DEST_DIR:-/}"
   mkdir -p "$(root "${OPT_DIR}")"
   mkdir -p "$(root "${ETC_DIR}")"
-  mkdir -p "$(root "${VAR_DIR}/db")"
+  mkdir -p "$(root "${VAR_DIR}")"
   mkdir -p "$(root /etc/systemd/system)"
 
   local env_dst
   env_dst="$(root "${ETC_DIR}/.env")"
   if [[ ! -f "${env_dst}" ]]; then
     log "writing ${ETC_DIR}/.env from .env.example"
-    # Force WATCH_PATH to the standard data dir in the installed tree.
-    sed "s|^WATCH_PATH=.*|WATCH_PATH=${VAR_DIR}/db|" \
-      "${REPO_ROOT}/.env.example" >"${env_dst}"
+    cp "${REPO_ROOT}/.env.example" "${env_dst}"
     chmod 600 "${env_dst}"
   else
     log "keeping existing ${ETC_DIR}/.env"
@@ -327,10 +327,15 @@ install_layout() {
 
   log "installing systemd units"
   install -m 644 \
+    "${REPO_ROOT}/deploy/systemd/api-gateway.service" \
+    "${REPO_ROOT}/deploy/systemd/knowledge-sync.service" \
     "${REPO_ROOT}/deploy/systemd/mail-gateway.service" \
-    "${REPO_ROOT}/deploy/systemd/reindex.service" \
     "${REPO_ROOT}/deploy/systemd/it-consultant.target" \
     "$(root /etc/systemd/system)/"
+  if ! is_fake_root && command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now reindex.service 2>/dev/null || true
+  fi
+  rm -f "$(root /etc/systemd/system/reindex.service)"
 }
 
 copy_app_sources() {
@@ -339,7 +344,7 @@ copy_app_sources() {
   mkdir -p "${dest}"
   log "copying application sources to ${OPT_DIR}"
   local item
-  for item in pyproject.toml README.md LICENSE common mail_gateway reindex; do
+  for item in pyproject.toml README.md LICENSE common knowledge api_gateway knowledge_sync mail_gateway integrations; do
     if [[ -e "${REPO_ROOT}/${item}" ]]; then
       rm -rf "${dest}/${item}"
       cp -a "${REPO_ROOT}/${item}" "${dest}/"
@@ -370,10 +375,10 @@ install_venv() {
   "${venv_dir}/bin/pip" install \
     --index-url "${TORCH_CPU_INDEX}" \
     torch torchvision
-  log "installing Python package into venv (.[reindex]: mail_gateway + reindex + common)"
+  log "installing Python package into venv (.[api])"
   "${venv_dir}/bin/pip" install \
     --extra-index-url "${TORCH_CPU_INDEX}" \
-    -e "${dest}[reindex]"
+    -e "${dest}[api]"
 }
 
 enable_unit() {
@@ -424,7 +429,7 @@ enable_systemd() {
   if ! command -v systemctl >/dev/null 2>&1; then
     echo "install: systemctl not found (WSL without systemd?)" >&2
     echo "install: start manually, e.g.:" >&2
-    echo "  sudo -u ${SERVICE_USER} ${OPT_DIR}/.venv/bin/python -m reindex" >&2
+    echo "  sudo -u ${SERVICE_USER} ${OPT_DIR}/.venv/bin/python -m api_gateway" >&2
     exit 1
   fi
   log "daemon-reload and enable --now ${unit}"
@@ -551,7 +556,7 @@ main() {
   log "done"
   log "  app:   ${DEST_DIR}${OPT_DIR}"
   log "  env:   ${DEST_DIR}${ETC_DIR}/.env"
-  log "  data:  ${DEST_DIR}${VAR_DIR}/db"
+  log "  data:  ${DEST_DIR}${VAR_DIR}"
   log "  units: ${DEST_DIR}/etc/systemd/system/"
 }
 
