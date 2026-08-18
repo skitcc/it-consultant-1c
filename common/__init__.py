@@ -1,4 +1,4 @@
-"""Shared code for mail_gateway and reindex services."""
+"""Small utilities shared by runtime services."""
 
 from common.settings import Settings
 

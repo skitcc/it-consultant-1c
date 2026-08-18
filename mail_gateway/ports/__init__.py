@@ -1,7 +1,7 @@
 from collections.abc import Iterator, Sequence
 from typing import Protocol, runtime_checkable
 
-from mail_gateway.domain.models import ConversationTurn, DocumentChunk, IncomingMessage, Reply
+from mail_gateway.domain.models import ConversationTurn, IncomingMessage, Reply
 
 
 @runtime_checkable
@@ -26,29 +26,10 @@ class ConversationHistoryLoader(Protocol):
 
 
 @runtime_checkable
-class DocumentRetriever(Protocol):
-    def retrieve(self, query: str) -> Sequence[DocumentChunk]:
-        """Return documentation chunks relevant to ``query``."""
-        ...
-
-
-@runtime_checkable
-class Reranker(Protocol):
-    def rerank(
-        self,
-        query: str,
-        chunks: Sequence[DocumentChunk],
-    ) -> Sequence[DocumentChunk]:
-        """Return ``chunks`` ordered by relevance to ``query`` (best first)."""
-        ...
-
-
-@runtime_checkable
 class Assistant(Protocol):
     def ask(self, message: IncomingMessage) -> str | None:
         """Return answer text, or None when no relevant answer exists.
 
         ``message.messages`` holds the full thread to send to the model.
-        ``message.rag_context`` may hold retrieved documentation snippets.
         """
         ...

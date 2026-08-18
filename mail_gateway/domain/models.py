@@ -18,15 +18,6 @@ class ConversationTurn:
 
 
 @dataclass(frozen=True, slots=True)
-class DocumentChunk:
-    text: str
-    source_path: str
-    chunk_index: int = 0
-    score: float | None = None
-    headings: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class IncomingMessage:
     conversation_id: str
     item_id: str
@@ -36,7 +27,6 @@ class IncomingMessage:
     body: str
     message_id: str | None = None
     messages: tuple[ConversationTurn, ...] = field(default_factory=tuple)
-    rag_context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +52,3 @@ def with_messages(
     messages: tuple[ConversationTurn, ...] | list[ConversationTurn],
 ) -> IncomingMessage:
     return replace(message, messages=tuple(messages))
-
-
-def with_rag_context(message: IncomingMessage, rag_context: str | None) -> IncomingMessage:
-    return replace(message, rag_context=rag_context)

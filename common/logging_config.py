@@ -1,4 +1,4 @@
-"""Shared utilities used by mail_gateway and reindex."""
+"""Shared logging configuration for all services."""
 
 from __future__ import annotations
 

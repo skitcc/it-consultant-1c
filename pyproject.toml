@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mail-gateway"
+name = "it-consultant"
 version = "0.1.0"
-description = "IT consultant services: Exchange mail gateway and file-based DB reindex"
+description = "IT consultant services: Knowledge RAG API, Open WebUI sync and Exchange gateway"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -19,17 +19,19 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
-reindex = [
-    "watchdog>=4.0.0",
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
     "docling>=2.0.0",
 ]
 
 [project.scripts]
 mail-gateway = "mail_gateway.__main__:main"
-reindex = "reindex.__main__:main"
+api-gateway = "api_gateway.__main__:main"
+knowledge-sync = "knowledge_sync.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["common", "mail_gateway", "reindex"]
+packages = ["common", "knowledge", "api_gateway", "knowledge_sync", "mail_gateway"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
