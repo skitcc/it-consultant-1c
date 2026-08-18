@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mail-gateway"
+version = "0.1.0"
+description = "IT consultant services: Exchange mail gateway and file-based DB reindex"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "exchangelib>=5.4.0",
+    "httpx>=0.27.0",
+    "pydantic-settings>=2.0.0",
+    "qdrant-client>=1.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+reindex = [
+    "watchdog>=4.0.0",
+    "docling>=2.0.0",
+]
+
+[project.scripts]
+mail-gateway = "mail_gateway.__main__:main"
+reindex = "reindex.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["common", "mail_gateway", "reindex"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "slow: full install with venv/pip (skipped when venv unavailable)",
+]

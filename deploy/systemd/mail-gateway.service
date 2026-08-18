@@ -1,0 +1,23 @@
+[Unit]
+Description=IT Consultant mail gateway (Exchange EWS)
+Documentation=file:///opt/it-consultant
+After=network-online.target
+Wants=network-online.target
+PartOf=it-consultant.target
+
+[Service]
+Type=simple
+User=it-consultant
+Group=it-consultant
+WorkingDirectory=/opt/it-consultant
+EnvironmentFile=-/etc/it-consultant/.env
+ExecStart=/opt/it-consultant/.venv/bin/python -m mail_gateway
+Restart=on-failure
+RestartSec=5
+
+# Hardening (safe defaults; adjust if Exchange/certs need more)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=it-consultant.target
