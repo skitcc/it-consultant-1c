@@ -18,7 +18,8 @@
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -e ".[dev]"
-# для reindex также:
+# для reindex также (CPU torch, без CUDA-колёс):
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
 pip install -e ".[reindex,dev]"
 cp .env.example .env
 ```
@@ -59,6 +60,8 @@ sudo ./deploy/install.sh --undeploy
 При интерактивном запуске (stdin — TTY) скрипт парсит все `KEY=` из [`.env.example`](.env.example) (включая закомментированные опциональные) и спрашивает каждое значение. Пустой ввод (Enter) оставляет значение как в `.env` (или из `.env.example` при первой установке); для опциональных ключей, которых ещё нет в `.env`, Enter ничего не добавляет. Пароли/секреты (`*PASSWORD*`, `*SECRET*`, `*TOKEN*`) вводятся скрыто. Для CI / скриптов: `--no-configure` (или просто не-TTY — вопросы пропускаются); принудительно спросить даже без TTY: `--configure`.
 
 `--undeploy` останавливает и отключает `it-consultant.target` (и связанные unit’ы), удаляет `/opt/it-consultant`, `/etc/it-consultant`, `/var/lib/it-consultant`, unit-файлы из `/etc/systemd/system/` и системного пользователя/группу `it-consultant`.
+
+`install.sh` перед Docling ставит CPU-сборку PyTorch (`https://download.pytorch.org/whl/cpu`), без CUDA-колёс. На CPU-сервере пайплайн тот же, меняется только размер/тип wheel. Переопределение индекса: `TORCH_CPU_INDEX=...`.
 
 ### Безопасная проверка без трогания host rootfs
 

@@ -14,6 +14,8 @@
 #
 # Environment:
 #   DESTDIR  — same as --dest-dir (packaging convention)
+#   PYTHON   — interpreter for venv (default: python3)
+#   TORCH_CPU_INDEX — PyTorch CPU wheel index (default: pytorch.org cpu)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +42,7 @@ ONLY=""
 # configure: auto | yes | no  (auto = prompt when stdin is a TTY)
 CONFIGURE=auto
 PYTHON="${PYTHON:-python3}"
+TORCH_CPU_INDEX="${TORCH_CPU_INDEX:-https://download.pytorch.org/whl/cpu}"
 
 usage() {
   cat <<'EOF'
@@ -360,9 +363,17 @@ install_venv() {
     fi
   fi
 
-  log "installing Python package into venv (.[reindex]: mail_gateway + reindex + common)"
   "${venv_dir}/bin/pip" install -U pip
-  "${venv_dir}/bin/pip" install -e "${dest}[reindex]"
+  # Docling needs torch; default PyPI wheels are CUDA. Pin CPU wheels first so
+  # the follow-up install does not pull multi-GB NVIDIA packages on a CPU host.
+  log "installing CPU-only PyTorch from ${TORCH_CPU_INDEX}"
+  "${venv_dir}/bin/pip" install \
+    --index-url "${TORCH_CPU_INDEX}" \
+    torch torchvision
+  log "installing Python package into venv (.[reindex]: mail_gateway + reindex + common)"
+  "${venv_dir}/bin/pip" install \
+    --extra-index-url "${TORCH_CPU_INDEX}" \
+    -e "${dest}[reindex]"
 }
 
 enable_unit() {
