@@ -3,37 +3,30 @@
 Универсальный RAG-сервис для Open WebUI и Exchange:
 
 ```text
-Open WebUI ─┐
-            ├─> API Gateway ─> Knowledge Core ─> Qdrant / Ollama
-Exchange ───┘
+Open WebUI (upload) ─> bind-mount uploads/ ─> reindex (watchdog)
+                                              └─> Knowledge Core ─> Qdrant / Ollama
 
-Open WebUI Knowledge ─> knowledge_sync ─> Knowledge Core
+Open WebUI / Exchange ─> API Gateway ─> Knowledge Core ─> Qdrant / Ollama
 ```
+
+Open WebUI только сохраняет файлы на диск и отправляет чат в gateway.
+Индексацию делает хостовый `reindex`: inotify/watchdog, затем `IndexDocument`.
 
 ## Компоненты
 
 - `knowledge/core` — независимые domain models, ports и use cases.
 - `knowledge/adapters` — Docling, Ollama, Qdrant и SQLite.
-- `api_gateway` — `/process` и OpenAI-compatible RAG chat.
-- `knowledge_sync` — инкрементальная сверка одной OWUI Knowledge-базы.
+- `api_gateway` — OpenAI-compatible RAG chat (`it-consultant`).
+- `reindex` — следит за `WATCH_PATH` и индексирует create/update/delete.
 - `mail_gateway` — EWS transport, вызывающий API Gateway.
 
-Folder watcher и сервис `reindex` удалены. Новый документ индексируется синхронно
-во время `PUT /process`; sync-сервис обрабатывает пропущенные upload, update,
-rename и delete. Обычное изменение никогда не пересоздаёт Qdrant collection и
-затрагивает только points конкретного `document_id`.
+Open WebUI не эмбеддит документы сам (`BYPASS_EMBEDDING_AND_RETRIEVAL`).
+External Document Loader и HTTP `knowledge_sync` не используются.
+Обычное изменение никогда не пересоздаёт Qdrant collection и затрагивает
+только points конкретного `document_id`.
 
-## Целостность upload
-
-Open WebUI External Document Loader читает сохранённый файл в binary mode и
-отправляет raw HTTP body. Gateway принимает body как `bytes`, а Docling adapter:
-
-1. вычисляет SHA-256 полученных bytes;
-2. записывает их без преобразований во временный файл с исходным suffix;
-3. повторно вычисляет SHA-256 временного файла;
-4. вызывает `DocumentConverter` только при совпадении hashes.
-
-JSON/base64 и декодирование документа в этой цепочке не используются.
+Имена файлов OWUI в `uploads/` выглядят как `{file_uuid}_{оригинал.pdf}`.
+Watcher берёт uuid как `document_id`, а в цитатах оставляет оригинальное имя.
 
 ## Локальная установка
 
@@ -45,39 +38,31 @@ python3 -m venv .venv
 .venv/bin/python -m pip install \
   --index-url https://download.pytorch.org/whl/cpu \
   torch torchvision
-.venv/bin/python -m pip install -e ".[api,dev]"
+.venv/bin/python -m pip install -e ".[api,reindex,dev]"
 cp .env.example .env
 ```
 
 Docling использует CPU PyTorch. CUDA wheels не нужны на CPU-сервере.
+Эмбеддинги и чат идут через Ollama (GPU в контейнере Ollama).
+
+Создайте каталоги, которые видят и Docker, и systemd:
+
+```bash
+sudo mkdir -p /var/lib/it-consultant/owui-data/uploads
+sudo chown -R "$USER:$USER" /var/lib/it-consultant
+```
 
 ## Настройка Open WebUI
-
-Создайте одну Knowledge-базу и сохраните её ID в:
-
-```dotenv
-OPEN_WEBUI_KNOWLEDGE_ID=<knowledge-id>
-OPEN_WEBUI_SYNC_TOKEN=<service-account-api-token>
-```
 
 В Admin → Documents:
 
 ```text
-Content Extraction Engine: external
-External Loader URL: http://api-gateway:8000
-External Loader API Key: значение OWUI_LOADER_KEY
 Bypass Embedding and Retrieval: enabled
 Hybrid Search: disabled
 ```
 
-Custom headers:
-
-```json
-{
-  "X-OpenWebUI-File-Id": "{{FILE_ID}}",
-  "X-OpenWebUI-File-Name": "{{FILE_NAME}}"
-}
-```
+Не включайте Content Extraction Engine = external: файлы должны только
+попадать в `/app/backend/data/uploads` (хост: `WATCH_PATH`).
 
 В Admin → Connections → OpenAI:
 
@@ -98,7 +83,6 @@ Open WebUI добавлять собственный RAG-контекст.
 
 Минимальный внешний API:
 
-- `PUT /process` — OWUI External Document Loader; успех только после Qdrant.
 - `GET /v1/models` — модель `it-consultant`.
 - `POST /v1/chat/completions` — OpenAI-compatible RAG chat.
 - `GET /health` — liveness.
@@ -106,18 +90,34 @@ Open WebUI добавлять собственный RAG-контекст.
 
 Отдельных document-management и retrieve endpoints нет.
 
-## Knowledge sync
+## Reindex
 
-`knowledge_sync` получает metadata всех файлов Knowledge, но скачивает и
-индексирует только:
+`reindex` при старте сверяет диск с registry/Qdrant, затем смотрит `WATCH_PATH`
+через watchdog. События `opened`/`closed` игнорируются, чтобы чтение файла
+не зациклило индексацию. После паузы `DEBOUNCE_SECONDS` применяется пачка
+upsert/delete.
 
-- новый file ID, отсутствующий в registry;
-- файл с изменившимся hash;
-- файл, callback которого был пропущен во время downtime.
+Open WebUI v0.11 при удалении из Knowledge часто не стирает блоб в `uploads/`.
+Поэтому watcher также следит за `webui.db` и `webui.db-wal` (каталог DATA_DIR
+рядом с `uploads/`). SQLite в WAL-режиме пишет удаления в `-wal`, а основной
+файл может не меняться часами. `-shm` не смотрим: его трогают и наши чтения.
+Пустой WAL-heartbeat пропускается, если id/`hash`/`updated_at` в таблице
+`file` не изменились.
+Правка документа в OWUI не трогает блоб в `uploads/` — текст лежит в
+`file.data.content`. Watcher подхватывает смену `hash`/`updated_at` и
+индексирует этот текст.
+Одинаковое содержимое индексируется один раз (канонический путь — первый
+по имени); удаление канонической копии поднимает следующую.
+После изменения SQLite сироты с именем `{uuid}_...`, которых уже нет в таблице
+`file`, удаляются с диска — обычный inotify `deleted` убирает их из Qdrant.
+Ручные копии без uuid-префикса не трогаются. Периодический скан не используется.
 
-Неизменённые файлы не скачиваются, не парсятся и не эмбеддятся. Rename обновляет
-только Qdrant payload. Delete применяется после нескольких успешных snapshots;
-при недоступном OWUI удаления запрещены.
+```bash
+.venv/bin/python -m reindex --once
+.venv/bin/python -m reindex
+```
+
+Compose **не** запускает indexer: один процесс на хосте, один inotify.
 
 ## Mail Gateway
 
@@ -141,19 +141,22 @@ API_GATEWAY_MODEL=it-consultant
 ## Docker Compose
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build ollama qdrant api-gateway open-webui
 ```
 
-Compose запускает Ollama, Qdrant, Open WebUI, API Gateway и knowledge sync.
+Compose поднимает Ollama, Qdrant, Open WebUI и API Gateway.
 Open WebUI зафиксирован на конкретной версии вместо `:main`.
+Данные OWUI монтируются с хоста (`OWUI_DATA_DIR`, по умолчанию
+`/var/lib/it-consultant/owui-data`), registry — из `ITC_VAR_DIR`
+(`/var/lib/it-consultant`), чтобы хостовый `reindex` видел те же файлы
+и SQLite.
 
 Перед запуском:
 
-1. заполните `.env`;
-2. создайте пользователя/Knowledge в OWUI;
-3. выпустите API token с доступом на чтение Knowledge;
-4. установите `OPEN_WEBUI_KNOWLEDGE_ID` и `OPEN_WEBUI_SYNC_TOKEN`;
-5. загрузите нужные модели в Ollama.
+1. заполните `.env` (`API_GATEWAY_API_KEY` обязателен для Compose);
+2. создайте `WATCH_PATH` на хосте;
+3. загрузите модели в Ollama (`nomic-embed-text`, чат-модель);
+4. запустите `python -m reindex` или systemd-unit.
 
 ## Systemd deployment
 
@@ -162,7 +165,7 @@ sudo ./deploy/install.sh --enable
 
 # Или запустить только один процесс:
 sudo ./deploy/install.sh --only api-gateway --enable
-sudo ./deploy/install.sh --only knowledge-sync --enable
+sudo ./deploy/install.sh --only reindex --enable
 sudo ./deploy/install.sh --only mail-gateway --enable
 ```
 
@@ -172,8 +175,9 @@ sudo ./deploy/install.sh --only mail-gateway --enable
 /opt/it-consultant/.venv
 /etc/it-consultant/.env
 /var/lib/it-consultant/registry.sqlite3
+/var/lib/it-consultant/owui-data/uploads
 /etc/systemd/system/api-gateway.service
-/etc/systemd/system/knowledge-sync.service
+/etc/systemd/system/reindex.service
 /etc/systemd/system/mail-gateway.service
 /etc/systemd/system/it-consultant.target
 ```
@@ -193,9 +197,11 @@ Fake-root проверка:
 
 Ключевые проверки:
 
-- binary body не изменяется между Gateway и Docling;
+- binary body не изменяется между indexer и Docling;
 - update одного документа не затрагивает остальные points;
 - ошибка новой версии сохраняет предыдущую;
-- Knowledge sync не переиндексирует неизменённые документы;
+- watcher не реагирует на opened/closed и debounce-ит пачку файлов;
+- upload `{uuid}_{name}` даёт тот же `document_id`, что uuid OWUI;
+- удаление в OWUI Knowledge чистит сирот в `uploads/` через watch `webui.db`;
 - OWUI и mail используют один `AnswerQuestion`;
 - `knowledge/core` не импортирует инфраструктурные библиотеки.
