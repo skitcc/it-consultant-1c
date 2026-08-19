@@ -243,12 +243,13 @@ tests/reindex/
 | `RAG_TOP_K` | Сколько чанков оставить после rerank | `8` |
 | `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
 | `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama `POST /api/chat` (Qwen3 yes/no) | `true` / `dengcao/Qwen3-Reranker-8B:Q8_0` |
-| `CHUNK_SIZE` | Max tokens для HybridChunker | `512` |
+| `CHUNK_SIZE` | Max tokens для HybridChunker (слишком большие таблицы режутся дальше) | `1024` |
 | `PICTURE_DESCRIPTION_ENABLED` | VLM-описания картинок (enrichment) | `true` |
 | `VLM_MODEL` | Vision-модель в том же Ollama | `qwen3-vl:8b` |
 | `VLM_TIMEOUT_SEC` | Таймаут описания одной картинки | `90` |
+| `VLM_CONCURRENCY` | Сколько картинок описывать параллельно | `2` |
 | `PICTURE_AREA_THRESHOLD` | Мин. доля площади страницы для VLM | `0.02` |
-| `LOG_LEVEL` | Уровень логов | `INFO` |
+| `LOG_LEVEL` | `INFO` — этапы файла; `DEBUG` — каждая картинка и HTTP библиотек | `INFO` |
 
 `CHUNK_OVERLAP` в `.env` игнорируется reindex (соседей склеивает `merge_peers`).
 Плюс общие / mail-поля из [`.env.example`](.env.example). `Settings` всё равно
