@@ -28,21 +28,22 @@ def fake_root(tmp_path: Path) -> Path:
     return root
 
 
-def test_layout_installs_gateway_sync_and_mail_units(fake_root: Path) -> None:
+def test_layout_installs_gateway_reindex_and_mail_units(fake_root: Path) -> None:
     result = _run_install(fake_root, "--layout-only")
 
     assert "layout-only" in result.stdout
     assert (fake_root / "var/lib/it-consultant").is_dir()
+    assert (fake_root / "var/lib/it-consultant/owui-data/uploads").is_dir()
     env_text = (fake_root / "etc/it-consultant/.env").read_text(encoding="utf-8")
     assert "DOCUMENT_REGISTRY_PATH=/var/lib/it-consultant/registry.sqlite3" in env_text
-    assert "WATCH_PATH=" not in env_text
+    assert "WATCH_PATH=/var/lib/it-consultant/owui-data/uploads" in env_text
 
     units = fake_root / "etc/systemd/system"
     assert (units / "api-gateway.service").is_file()
-    assert (units / "knowledge-sync.service").is_file()
+    assert (units / "reindex.service").is_file()
     assert (units / "mail-gateway.service").is_file()
     assert (units / "it-consultant.target").is_file()
-    assert not (units / "reindex.service").exists()
+    assert not (units / "knowledge-sync.service").exists()
 
 
 def test_units_use_expected_python_modules(fake_root: Path) -> None:
@@ -50,18 +51,20 @@ def test_units_use_expected_python_modules(fake_root: Path) -> None:
     units = fake_root / "etc/systemd/system"
 
     assert "python -m api_gateway" in (units / "api-gateway.service").read_text()
-    assert "python -m knowledge_sync" in (units / "knowledge-sync.service").read_text()
+    assert "python -m reindex" in (units / "reindex.service").read_text()
     assert "python -m mail_gateway" in (units / "mail-gateway.service").read_text()
     target = (units / "it-consultant.target").read_text()
-    assert "api-gateway.service knowledge-sync.service mail-gateway.service" in target
-    assert "reindex" not in target
+    assert "api-gateway.service reindex.service mail-gateway.service" in target
+    assert "knowledge-sync" not in target
+    reindex_unit = (units / "reindex.service").read_text()
+    assert "ReadWritePaths=/var/lib/it-consultant" in reindex_unit
 
 
 @pytest.mark.parametrize(
     ("service", "unit"),
     [
         ("api-gateway", "api-gateway.service"),
-        ("knowledge-sync", "knowledge-sync.service"),
+        ("reindex", "reindex.service"),
         ("mail-gateway", "mail-gateway.service"),
     ],
 )
@@ -80,7 +83,7 @@ def test_only_selects_supported_service(
     assert f"would enable: {unit}" in result.stdout
 
 
-def test_only_rejects_removed_reindex_service(fake_root: Path) -> None:
+def test_only_rejects_removed_knowledge_sync_service(fake_root: Path) -> None:
     result = subprocess.run(
         [
             str(INSTALL_SH),
@@ -88,7 +91,7 @@ def test_only_rejects_removed_reindex_service(fake_root: Path) -> None:
             str(fake_root),
             "--layout-only",
             "--only",
-            "reindex",
+            "knowledge-sync",
         ],
         capture_output=True,
         text=True,
@@ -119,7 +122,7 @@ def test_undeploy_removes_installed_tree(fake_root: Path) -> None:
     assert not (fake_root / "var/lib/it-consultant").exists()
     units = fake_root / "etc/systemd/system"
     assert not (units / "api-gateway.service").exists()
-    assert not (units / "knowledge-sync.service").exists()
+    assert not (units / "reindex.service").exists()
     assert not (units / "mail-gateway.service").exists()
 
 

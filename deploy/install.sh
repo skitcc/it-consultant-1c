@@ -5,6 +5,7 @@
 #   sudo ./deploy/install.sh
 #   sudo ./deploy/install.sh --enable
 #   sudo ./deploy/install.sh --only api-gateway --enable
+#   sudo ./deploy/install.sh --only reindex --enable
 #   sudo ./deploy/install.sh --undeploy
 #
 # Safe fake-root (no systemd, no user creation, does not touch host /):
@@ -28,10 +29,10 @@ SERVICE_USER="it-consultant"
 SERVICE_GROUP="it-consultant"
 UNITS=(
   api-gateway.service
-  knowledge-sync.service
+  reindex.service
   mail-gateway.service
   it-consultant.target
-  reindex.service
+  knowledge-sync.service
 )
 
 DEST_DIR="${DESTDIR:-}"
@@ -39,7 +40,7 @@ LAYOUT_ONLY=0
 ENABLE=0
 CREATE_USER=1
 UNDEPLOY=0
-# empty | api-gateway | knowledge-sync | mail-gateway
+# empty | api-gateway | reindex | mail-gateway
 ONLY=""
 # configure: auto | yes | no  (auto = prompt when stdin is a TTY)
 CONFIGURE=auto
@@ -54,7 +55,7 @@ Options:
   --dest-dir DIR   Install/undeploy under DIR as fake root (sets DESTDIR).
                    Skips systemctl and useradd/userdel. Safe for local/CI tests.
   --layout-only    Create dirs, .env, systemd units only (no copy/venv/pip).
-  --only NAME      Enable/start only: api-gateway, knowledge-sync or mail-gateway.
+  --only NAME      Enable/start only: api-gateway, reindex or mail-gateway.
                    Still copies the app, creates venv, and installs all units
                    and API/indexing dependencies. Ignored with --undeploy.
   --enable         systemctl daemon-reload && enable --now
@@ -71,7 +72,7 @@ Options:
 Paths (always absolute on the target system; prefixed by --dest-dir when set):
   /opt/it-consultant       application + .venv
   /etc/it-consultant/.env  secrets / settings
-  /var/lib/it-consultant     persistent document registry
+  /var/lib/it-consultant     persistent document registry and OWUI uploads
   /etc/systemd/system/     unit files
 
 Interactive configure (TTY by default, or --configure) asks for all KEY=
@@ -92,7 +93,7 @@ while [[ $# -gt 0 ]]; do
     --only)
       ONLY="${2:?--only requires a service name}"
       case "${ONLY}" in
-        api-gateway|knowledge-sync|mail-gateway) ;;
+        api-gateway|reindex|mail-gateway) ;;
         *)
           echo "install: unsupported --only service: ${ONLY}" >&2
           usage >&2
@@ -311,6 +312,7 @@ install_layout() {
   mkdir -p "$(root "${OPT_DIR}")"
   mkdir -p "$(root "${ETC_DIR}")"
   mkdir -p "$(root "${VAR_DIR}")"
+  mkdir -p "$(root "${VAR_DIR}/owui-data/uploads")"
   mkdir -p "$(root /etc/systemd/system)"
 
   local env_dst
@@ -328,14 +330,14 @@ install_layout() {
   log "installing systemd units"
   install -m 644 \
     "${REPO_ROOT}/deploy/systemd/api-gateway.service" \
-    "${REPO_ROOT}/deploy/systemd/knowledge-sync.service" \
+    "${REPO_ROOT}/deploy/systemd/reindex.service" \
     "${REPO_ROOT}/deploy/systemd/mail-gateway.service" \
     "${REPO_ROOT}/deploy/systemd/it-consultant.target" \
     "$(root /etc/systemd/system)/"
   if ! is_fake_root && command -v systemctl >/dev/null 2>&1; then
-    systemctl disable --now reindex.service 2>/dev/null || true
+    systemctl disable --now knowledge-sync.service 2>/dev/null || true
   fi
-  rm -f "$(root /etc/systemd/system/reindex.service)"
+  rm -f "$(root /etc/systemd/system/knowledge-sync.service)"
 }
 
 copy_app_sources() {
@@ -344,7 +346,7 @@ copy_app_sources() {
   mkdir -p "${dest}"
   log "copying application sources to ${OPT_DIR}"
   local item
-  for item in pyproject.toml README.md LICENSE common knowledge api_gateway knowledge_sync mail_gateway integrations; do
+  for item in pyproject.toml README.md LICENSE common knowledge api_gateway knowledge_sync mail_gateway reindex integrations; do
     if [[ -e "${REPO_ROOT}/${item}" ]]; then
       rm -rf "${dest}/${item}"
       cp -a "${REPO_ROOT}/${item}" "${dest}/"
@@ -375,10 +377,10 @@ install_venv() {
   "${venv_dir}/bin/pip" install \
     --index-url "${TORCH_CPU_INDEX}" \
     torch torchvision
-  log "installing Python package into venv (.[api])"
+  log "installing Python package into venv (.[api,reindex])"
   "${venv_dir}/bin/pip" install \
     --extra-index-url "${TORCH_CPU_INDEX}" \
-    -e "${dest}[api]"
+    -e "${dest}[api,reindex]"
 }
 
 enable_unit() {

@@ -1,7 +1,7 @@
 [Unit]
-Description=IT Consultant Open WebUI Knowledge synchronizer
+Description=IT Consultant file-based DB reindex service
 Documentation=file:///opt/it-consultant
-After=network-online.target api-gateway.service
+After=network-online.target
 Wants=network-online.target
 PartOf=it-consultant.target
 
@@ -11,13 +11,16 @@ User=it-consultant
 Group=it-consultant
 WorkingDirectory=/opt/it-consultant
 EnvironmentFile=-/etc/it-consultant/.env
-ExecStart=/opt/it-consultant/.venv/bin/python -m knowledge_sync
+ExecStart=/opt/it-consultant/.venv/bin/python -m reindex
 Restart=on-failure
 RestartSec=5
 
 NoNewPrivileges=true
 PrivateTmp=true
+
+# Allow reading/writing the watched OWUI uploads directory and document registry
 ReadWritePaths=/var/lib/it-consultant
 
 [Install]
+WantedBy=multi-user.target
 WantedBy=it-consultant.target
