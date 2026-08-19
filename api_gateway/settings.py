@@ -19,9 +19,3 @@ class GatewaySettings(KnowledgeSettings):
         min_length=1,
         alias="API_GATEWAY_MODEL",
     )
-    owui_loader_key: str = Field(min_length=1, alias="OWUI_LOADER_KEY")
-    max_upload_bytes: int = Field(
-        default=100 * 1024 * 1024,
-        gt=0,
-        alias="MAX_UPLOAD_BYTES",
-    )
