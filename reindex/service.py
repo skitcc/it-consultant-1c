@@ -34,9 +34,14 @@ def build_indexer(settings: Settings) -> Indexer:
     logger.info("Index extensions enabled: %s", sorted(allowed))
     if settings.picture_description_enabled:
         logger.info(
-            "Picture description enabled model=%s ollama=%s",
+            "Picture description enabled model=%s ollama=%s concurrency=%s "
+            "timeout=%ss threshold=%.3f chunk_size=%s",
             settings.vlm_model,
             settings.ollama_base_url,
+            settings.vlm_concurrency,
+            settings.vlm_timeout_sec,
+            settings.picture_area_threshold,
+            settings.chunk_size,
         )
     embedder = OllamaEmbedder(
         base_url=settings.ollama_base_url,
@@ -50,6 +55,7 @@ def build_indexer(settings: Settings) -> Indexer:
             ollama_base_url=settings.ollama_base_url,
             model=settings.vlm_model,
             timeout_sec=settings.vlm_timeout_sec,
+            concurrency=settings.vlm_concurrency,
             area_threshold=settings.picture_area_threshold,
         ),
     )

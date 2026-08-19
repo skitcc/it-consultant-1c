@@ -47,10 +47,11 @@ def test_settings_default_chunk_size_is_max_tokens() -> None:
         EWS_EMAIL="e",
         EWS_PASSWORD="p",
     )
-    assert settings.chunk_size == 512
+    assert settings.chunk_size == 1024
     assert settings.picture_description_enabled is True
     assert settings.vlm_model == "qwen3-vl:8b"
     assert settings.vlm_timeout_sec == 90.0
+    assert settings.vlm_concurrency == 2
     assert settings.picture_area_threshold == 0.02
 
 

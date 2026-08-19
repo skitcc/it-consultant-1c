@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     )
     rerank_base_url: str | None = Field(default=None, alias="RERANK_BASE_URL")
     rerank_timeout_sec: float = Field(default=60.0, alias="RERANK_TIMEOUT_SEC")
-    chunk_size: int = Field(default=512, alias="CHUNK_SIZE")
+    chunk_size: int = Field(default=1024, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=150, alias="CHUNK_OVERLAP")
 
     # --- reindex picture description (Docling enrichment via Ollama VLM) ---
@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     )
     vlm_model: str = Field(default="qwen3-vl:8b", alias="VLM_MODEL")
     vlm_timeout_sec: float = Field(default=90.0, alias="VLM_TIMEOUT_SEC")
+    vlm_concurrency: int = Field(default=2, alias="VLM_CONCURRENCY")
     picture_area_threshold: float = Field(
         default=0.02,
         alias="PICTURE_AREA_THRESHOLD",

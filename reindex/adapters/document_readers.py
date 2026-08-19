@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from common.chunking import chunk_text
 from reindex.domain.formats import SUPPORTED_SUFFIXES
 from reindex.domain.models import DocumentChunk
 from reindex.ports import DocumentReader
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_TOKENS = 512
+_DEFAULT_MAX_TOKENS = 1024
+# nomic-embed-text context is ~8192; keep tokenizer encoding uncapped vs 512.
+_TOKENIZER_MODEL_MAX_LENGTH = 8192
+_VLM_URL_MARKERS = ("/v1/chat/completions", "/api/chat")
 _VLM_PROMPT = (
     "Опиши изображение из документации 1С для поиска. "
     "Кратко и точно: что изображено (скрин формы, схема, таблица), "
@@ -31,6 +37,7 @@ class PictureDescriptionConfig:
     ollama_base_url: str = "http://127.0.0.1:11434"
     model: str = "qwen2.5vl:3b"
     timeout_sec: float = 90.0
+    concurrency: int = 2
     area_threshold: float = 0.02
 
 
@@ -59,6 +66,7 @@ class DoclingDocumentReader:
         self._chunker = chunker
         self._max_tokens = max_tokens
         self._picture = picture or PictureDescriptionConfig()
+        self._tokenizer: Any | None = None
 
     def _get_converter(self) -> Any:
         if self._converter is not None:
@@ -75,7 +83,9 @@ class DoclingDocumentReader:
         if self._chunker is not None:
             return self._chunker
         try:
-            self._chunker = _build_chunker(self._max_tokens)
+            tokenizer = _tokenizer_with_max_tokens(self._max_tokens)
+            self._tokenizer = tokenizer
+            self._chunker = _build_chunker(self._max_tokens, tokenizer=tokenizer)
         except ImportError as exc:
             raise RuntimeError(
                 "Chunking documents requires docling; install with: pip install -e '.[reindex]'"
@@ -85,16 +95,70 @@ class DoclingDocumentReader:
     def read(self, path: Path) -> list[DocumentChunk]:
         converter = self._get_converter()
         chunker = self._get_chunker()
-        result = converter.convert(str(path))
+        picture = self._picture
+        logger.debug(
+            "Convert start path=%s vlm=%s url=%s model=%s concurrency=%s "
+            "timeout=%ss area_threshold=%.3f max_tokens=%s",
+            path.name,
+            picture.enabled,
+            chat_completions_url(picture.ollama_base_url) if picture.enabled else "-",
+            picture.model if picture.enabled else "-",
+            picture.concurrency if picture.enabled else 0,
+            picture.timeout_sec if picture.enabled else 0,
+            picture.area_threshold,
+            self._max_tokens,
+        )
+        logger.info(
+            "Convert start path=%s vlm=%s model=%s",
+            path.name,
+            picture.enabled,
+            picture.model if picture.enabled else "-",
+        )
+        started = time.perf_counter()
+        with _log_vlm_http():
+            result = converter.convert(str(path))
+        convert_sec = time.perf_counter() - started
         document = result.document
+        described, skipped = _log_picture_outcomes(document, vlm_enabled=picture.enabled)
+        logger.info(
+            "Convert done path=%s elapsed=%.1fs pictures_described=%s pictures_skipped=%s",
+            path.name,
+            convert_sec,
+            described,
+            skipped,
+        )
+
+        started = time.perf_counter()
         chunks: list[DocumentChunk] = []
+        raw_count = 0
         for raw in chunker.chunk(dl_doc=document):
+            raw_count += 1
             text = str(chunker.contextualize(raw)).strip()
             if not text:
                 continue
-            chunks.append(
-                DocumentChunk(text=text, headings=_headings_from_chunk(raw)),
+            headings = _headings_from_chunk(raw)
+            pieces = split_oversized_text(
+                text,
+                max_tokens=self._max_tokens,
+                tokenizer=self._tokenizer,
             )
+            if len(pieces) > 1:
+                logger.debug(
+                    "Split oversized chunk path=%s headings=%s pieces=%s chars=%s",
+                    path.name,
+                    " / ".join(headings) if headings else "-",
+                    len(pieces),
+                    len(text),
+                )
+            for piece in pieces:
+                chunks.append(DocumentChunk(text=piece, headings=headings))
+        logger.info(
+            "Chunked path=%s raw=%s stored=%s elapsed=%.2fs",
+            path.name,
+            raw_count,
+            len(chunks),
+            time.perf_counter() - started,
+        )
         return chunks
 
 
@@ -207,6 +271,7 @@ def _build_picture_description_options(config: PictureDescriptionConfig) -> Any 
         "params": {"model": config.model, "max_completion_tokens": 400},
         "prompt": _VLM_PROMPT,
         "timeout": config.timeout_sec,
+        "concurrency": max(1, int(config.concurrency)),
     }
     try:
         return PictureDescriptionApiOptions(
@@ -258,16 +323,16 @@ def _optional_import_attr(module_name: str, attr: str) -> Any | None:
     return getattr(module, attr, None)
 
 
-def _build_chunker(max_tokens: int) -> Any:
+def _build_chunker(max_tokens: int, *, tokenizer: Any | None = None) -> Any:
     from docling.chunking import HybridChunker
 
     kwargs: dict[str, Any] = {
         "merge_peers": True,
         "repeat_table_header": True,
     }
-    tokenizer = _tokenizer_with_max_tokens(max_tokens)
-    if tokenizer is not None:
-        kwargs["tokenizer"] = tokenizer
+    tok = tokenizer if tokenizer is not None else _tokenizer_with_max_tokens(max_tokens)
+    if tok is not None:
+        kwargs["tokenizer"] = tok
     else:
         kwargs["max_tokens"] = max_tokens
     serializer_provider = _chunking_serializer_provider()
@@ -285,7 +350,20 @@ def _tokenizer_with_max_tokens(max_tokens: int) -> Any | None:
     except ImportError:
         return None
     default = get_default_tokenizer()
-    return HuggingFaceTokenizer(tokenizer=default.tokenizer, max_tokens=max_tokens)
+    hf_tokenizer = default.tokenizer
+    # Default pretrained cap is 512; HybridChunker then warns on tables (1742 > 512)
+    # and can truncate token counts used for splitting.
+    model_max = max(_TOKENIZER_MODEL_MAX_LENGTH, max_tokens * 8)
+    try:
+        hf_tokenizer.model_max_length = model_max
+    except (AttributeError, TypeError):
+        pass
+    logger.debug(
+        "HybridChunker tokenizer max_tokens=%s model_max_length=%s",
+        max_tokens,
+        getattr(hf_tokenizer, "model_max_length", "?"),
+    )
+    return HuggingFaceTokenizer(tokenizer=hf_tokenizer, max_tokens=max_tokens)
 
 
 def _chunking_serializer_provider() -> Any | None:
@@ -368,7 +446,7 @@ class _PictureDescriptionSerializer:
             caption=_picture_caption(item, doc),
         )
         if not text:
-            logger.warning(
+            logger.debug(
                 "Skipping picture without VLM description: %s",
                 getattr(item, "self_ref", "?"),
             )
@@ -434,3 +512,160 @@ def _headings_from_chunk(chunk: Any) -> tuple[str, ...]:
     if not headings:
         return ()
     return tuple(str(item) for item in headings if item)
+
+
+@contextmanager
+def _log_vlm_http() -> Iterator[None]:
+    """Log Docling VLM POSTs (they use ``requests``, not httpx)."""
+    try:
+        import requests
+    except ImportError:
+        yield
+        return
+
+    original = requests.Session.post
+
+    def _logged(self: Any, url: Any, *args: Any, **kwargs: Any) -> Any:
+        url_text = str(url)
+        if not any(marker in url_text for marker in _VLM_URL_MARKERS):
+            return original(self, url, *args, **kwargs)
+        payload = kwargs.get("json") if isinstance(kwargs.get("json"), dict) else {}
+        model = payload.get("model", "?") if isinstance(payload, dict) else "?"
+        started = time.perf_counter()
+        logger.info("VLM request sent url=%s model=%s", url_text, model)
+        try:
+            response = original(self, url, *args, **kwargs)
+        except Exception:
+            logger.exception(
+                "VLM request failed url=%s model=%s elapsed=%.1fs",
+                url_text,
+                model,
+                time.perf_counter() - started,
+            )
+            raise
+        description_chars = _vlm_response_chars(response)
+        logger.info(
+            "VLM response url=%s model=%s status=%s elapsed=%.1fs description_chars=%s",
+            url_text,
+            model,
+            getattr(response, "status_code", "?"),
+            time.perf_counter() - started,
+            description_chars,
+        )
+        return response
+
+    requests.Session.post = _logged  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        requests.Session.post = original  # type: ignore[method-assign]
+
+
+def _vlm_response_chars(response: Any) -> int:
+    try:
+        if not getattr(response, "ok", False):
+            return 0
+        data = response.json()
+        if not isinstance(data, dict):
+            return 0
+        choices = data.get("choices") or []
+        if not choices:
+            return 0
+        message = (choices[0] or {}).get("message") or {}
+        content = message.get("content") or ""
+        return len(str(content))
+    except Exception:
+        return 0
+
+
+def _log_picture_outcomes(document: Any, *, vlm_enabled: bool) -> tuple[int, int]:
+    pictures = _iter_pictures(document)
+    described = skipped = 0
+    for picture in pictures:
+        ref = getattr(picture, "self_ref", "?")
+        text = _picture_description(picture)
+        if text:
+            described += 1
+            logger.debug(
+                "VLM picture described ref=%s chars=%s",
+                ref,
+                len(text),
+            )
+            continue
+        skipped += 1
+        reason = (
+            "below area threshold or API returned empty"
+            if vlm_enabled
+            else "VLM disabled"
+        )
+        logger.debug("VLM picture skipped ref=%s reason=%s", ref, reason)
+    if not pictures:
+        logger.debug("VLM pictures found=0")
+    return described, skipped
+
+
+def _iter_pictures(document: Any) -> list[Any]:
+    pictures = getattr(document, "pictures", None)
+    if pictures is None:
+        return []
+    try:
+        return list(pictures)
+    except TypeError:
+        return []
+
+
+def split_oversized_text(
+    text: str,
+    *,
+    max_tokens: int,
+    tokenizer: Any | None = None,
+) -> list[str]:
+    """Split HybridChunker output that still exceeds ``max_tokens`` (wide tables)."""
+    stripped = text.strip()
+    if not stripped:
+        return []
+    if max_tokens <= 0:
+        raise ValueError("max_tokens must be positive")
+    if _token_count(stripped, tokenizer) <= max_tokens:
+        return [stripped]
+
+    separator = "\n\n" if "\n\n" in stripped else "\n"
+    parts = [part.strip() for part in stripped.split(separator) if part.strip()]
+    if len(parts) <= 1:
+        return _hard_split_text(stripped, max_tokens=max_tokens)
+
+    packed: list[str] = []
+    buffer: list[str] = []
+
+    def flush() -> None:
+        if buffer:
+            packed.append(separator.join(buffer))
+            buffer.clear()
+
+    for part in parts:
+        if _token_count(part, tokenizer) > max_tokens:
+            flush()
+            packed.extend(_hard_split_text(part, max_tokens=max_tokens))
+            continue
+        trial = separator.join(buffer + [part]) if buffer else part
+        if buffer and _token_count(trial, tokenizer) > max_tokens:
+            flush()
+        buffer.append(part)
+    flush()
+    return packed or [stripped]
+
+
+def _token_count(text: str, tokenizer: Any | None) -> int:
+    count = getattr(tokenizer, "count_tokens", None) if tokenizer is not None else None
+    if callable(count):
+        try:
+            return int(count(text))
+        except Exception:
+            logger.debug("tokenizer.count_tokens failed; using char heuristic", exc_info=True)
+    return max(1, (len(text) + 3) // 4)
+
+
+def _hard_split_text(text: str, *, max_tokens: int) -> list[str]:
+    window = max(64, max_tokens * 4)
+    overlap = min(150, max(0, window // 6))
+    return chunk_text(text, chunk_size=window, overlap=overlap)

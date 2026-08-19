@@ -11,6 +11,7 @@ from reindex.adapters.document_readers import (
     chat_completions_url,
     format_picture_block,
     picture_pipeline_flags,
+    split_oversized_text,
 )
 from reindex.domain.models import DocumentChunk
 
@@ -231,3 +232,57 @@ def test_picture_serializer_is_accepted_by_chunking_doc_serializer() -> None:
     assert "[Изображение]" in text
     assert "Описание: кнопка Провести" in text
     assert "Подпись: Скрин формы" in text
+
+
+class _CountingTokenizer:
+    def count_tokens(self, text: str) -> int:
+        return max(1, (len(text) + 3) // 4)
+
+
+def test_split_oversized_text_keeps_short_chunk() -> None:
+    assert split_oversized_text("hello", max_tokens=32) == ["hello"]
+
+
+def test_split_oversized_text_splits_paragraphs() -> None:
+    part_a = "a" * 40
+    part_b = "b" * 40
+    pieces = split_oversized_text(
+        f"{part_a}\n\n{part_b}",
+        max_tokens=12,
+        tokenizer=_CountingTokenizer(),
+    )
+    assert len(pieces) == 2
+    assert part_a in pieces[0]
+    assert part_b in pieces[1]
+
+
+def test_vlm_http_logging_records_chat_completions(monkeypatch, caplog) -> None:
+    import logging as logging_mod
+
+    import requests
+
+    class DummyResponse:
+        ok = True
+        status_code = 200
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": "скрин формы обмена"}}]}
+
+    def fake_post(self, url, *args, **kwargs):
+        return DummyResponse()
+
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    from reindex.adapters.document_readers import _log_vlm_http
+
+    caplog.set_level(logging_mod.INFO)
+    with _log_vlm_http():
+        session = requests.Session()
+        session.post("https://huggingface.co/api/models/x")
+        session.post(
+            "http://spark.pers.local:11434/v1/chat/completions",
+            json={"model": "qwen3-vl:8b"},
+        )
+
+    assert "VLM request sent" in caplog.text
+    assert "qwen3-vl:8b" in caplog.text
+    assert "huggingface.co" not in caplog.text
