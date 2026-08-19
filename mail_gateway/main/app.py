@@ -115,6 +115,8 @@ def run(settings: Settings | None = None) -> None:
         base_url=settings.ollama_base_url,
         model=settings.ollama_model,
         timeout_sec=settings.ollama_timeout_sec,
+        temperature=settings.ollama_temperature,
+        top_p=settings.ollama_top_p,
         system_prompt=settings.ai_system_prompt,
     )
     handle = HandleIncomingMail(

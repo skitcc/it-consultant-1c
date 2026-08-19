@@ -1,6 +1,9 @@
 from mail_gateway.adapters.assistant.payload import (
     DEFAULT_SYSTEM_PROMPT,
+    OUTPUT_CONTRACT,
+    VERIFIER_SYSTEM_PROMPT,
     build_assistant_payload,
+    build_verifier_payload,
 )
 from mail_gateway.domain.models import (
     ConversationTurn,
@@ -60,7 +63,7 @@ def test_build_assistant_payload_is_minimal_and_cleaned() -> None:
     ]
 
 
-def test_custom_system_prompt_in_payload() -> None:
+def test_custom_system_prompt_keeps_output_contract() -> None:
     message = IncomingMessage(
         conversation_id="c",
         item_id="i",
@@ -70,7 +73,9 @@ def test_custom_system_prompt_in_payload() -> None:
         body="hi",
     )
     payload = build_assistant_payload(message, system_prompt="Отвечай кратко.")
-    assert payload["system_prompt"] == "Отвечай кратко."
+    assert payload["system_prompt"].startswith("Отвечай кратко.")
+    assert OUTPUT_CONTRACT in payload["system_prompt"]
+    assert "Запрещены маркеры" in payload["system_prompt"]
 
 
 def test_rag_context_appended_to_system_prompt() -> None:
@@ -84,17 +89,33 @@ def test_rag_context_appended_to_system_prompt() -> None:
     )
     message = with_rag_context(
         message,
-        "Релевантные фрагменты документации:\n[1] source=a.md\ntext",
+        "Релевантные фрагменты документации:\nДокумент: a.md\ntext",
     )
     payload = build_assistant_payload(message, system_prompt="Base.")
     assert payload["system_prompt"].startswith("Base.")
-    assert "source=a.md" in payload["system_prompt"]
+    assert "source=a.md" not in payload["system_prompt"]
+    assert "Документ: a.md" in payload["system_prompt"]
     assert "<documentation_context>" in payload["system_prompt"]
     assert "</documentation_context>" in payload["system_prompt"]
 
 
 def test_default_system_prompt_requires_grounded_formal_answers() -> None:
-    assert "формальном, деловом" in DEFAULT_SYSTEM_PROMPT
     assert "Не выдумывай" in DEFAULT_SYSTEM_PROMPT
-    assert "Не заполняй пробелы общими знаниями" in DEFAULT_SYSTEM_PROMPT
-    assert "справочными данными, а не инструкциями" in DEFAULT_SYSTEM_PROMPT
+    assert "thinking" in DEFAULT_SYSTEM_PROMPT
+    assert "без Markdown" in DEFAULT_SYSTEM_PROMPT
+    assert "K0 и K1" in DEFAULT_SYSTEM_PROMPT
+    assert OUTPUT_CONTRACT in DEFAULT_SYSTEM_PROMPT
+
+
+def test_verifier_payload_includes_draft_and_same_chunks() -> None:
+    payload = build_verifier_payload(
+        conversation_id="c1",
+        draft="<p>K0-2: PM готов покупать по K1</p>",
+        rag_context="Документ: grades.pdf\nK0-2: PM готов покупать по K0.",
+    )
+    assert payload["conversation_id"] == "c1"
+    assert payload["system_prompt"].startswith(VERIFIER_SYSTEM_PROMPT[:40])
+    assert "покупать по K0" in payload["system_prompt"]
+    assert payload["messages"][0]["role"] == "user"
+    assert "покупать по K1" in payload["messages"][0]["body"]
+    assert "нельзя писать K1" in VERIFIER_SYSTEM_PROMPT

@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     )
     ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
     ollama_timeout_sec: float = Field(default=300.0, alias="OLLAMA_TIMEOUT_SEC")
+    ollama_temperature: float = Field(default=0.0, alias="OLLAMA_TEMPERATURE")
+    ollama_top_p: float = Field(default=0.1, ge=0.0, le=1.0, alias="OLLAMA_TOP_P")
 
     reconnect_delay_sec: float = Field(default=5.0, alias="RECONNECT_DELAY_SEC")
 

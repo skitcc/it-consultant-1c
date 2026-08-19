@@ -117,8 +117,8 @@ tests/
 2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
 3. Загрузка треда, очистка тел.
 4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (соседи в том же разделе по `headings`) → фрагменты в `system_prompt`.
-5. `POST` в Ollama `/api/chat`.
-6. Reply через EWS в тот же тред.
+5. Два вызова Ollama `/api/chat` одной моделью (`temperature=0`, `top_p=0.1`, thinking): черновик, затем проверка по тем же чанкам.
+6. HTML-reply через EWS (таблицы, без Markdown и ссылок) + список использованных документов в конце.
 7. При обрыве streaming — reconnect.
 
 `change_key` — версия объекта письма в Exchange. Вместе с `item_id` однозначно указывает на конкретную ревизию письма; без него `get`/`reply` могут упасть, если письмо уже изменилось.
@@ -162,12 +162,18 @@ Instruct/Query/Document → числовой score `0.00..1.00`), дополня
 и логирует внутренний payload. Для reasoning-модели `RERANK_NUM_PREDICT` включает
 токены внутреннего thinking; если итоговый score не получен, запрос один раз
 повторяется с отключённым thinking. При недоступности модели сохраняется fallback
-на исходные vector scores:
+на исходные vector scores.
+
+Ответ пользователю строится в два слоя одной `OLLAMA_MODEL`: сначала черновик,
+затем проверка по тем же чанкам. В thinking модель сначала выписывает цитаты,
+потом пишет HTML без Markdown, URL и сносок `[1]`. Код добавляет в конец письма
+имена документов. Параметры генерации: `OLLAMA_TEMPERATURE` (по умолчанию `0`)
+и `OLLAMA_TOP_P` (по умолчанию `0.1`).
 
 ```json
 {
   "conversation_id": "...",
-  "system_prompt": "Ты IT-консультант...\n\nРелевантные фрагменты документации:\n[1] source=guide.md\n...",
+  "system_prompt": "Ты — внутренний IT-консультант...\n\n<documentation_context>\nДокумент: guide.md\n...",
   "messages": [
     {"role": "user", "body": "test"},
     {"role": "assistant", "body": "ответ"},
@@ -177,8 +183,10 @@ Instruct/Query/Document → числовой score `0.00..1.00`), дополня
 ```
 
 В Ollama уходит `POST /api/chat` с `messages`: `system` + история `user`/`assistant`
-(`body` → `content`). Системный промпт можно переопределить через `AI_SYSTEM_PROMPT`.
-Модель с Qdrant напрямую не общается — retrieval делает `mail_gateway`.
+(`body` → `content`), `think: true` и `options.temperature` / `options.top_p`.
+Дополнительные инструкции можно задать через `AI_SYSTEM_PROMPT` (контракт формата
+ответа всё равно добавляется). Модель с Qdrant напрямую не общается — retrieval
+делает `mail_gateway`.
 
 При `LOG_LEVEL=INFO` reranker пишет начало и итог обработки: модель, число
 кандидатов, время и лучший score. При `LOG_LEVEL=DEBUG` дополнительно видны

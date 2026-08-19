@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -614,6 +615,10 @@ def _iter_pictures(document: Any) -> list[Any]:
         return []
 
 
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+
+
 def split_oversized_text(
     text: str,
     *,
@@ -629,10 +634,13 @@ def split_oversized_text(
     if _token_count(stripped, tokenizer) <= max_tokens:
         return [stripped]
 
+    if _looks_like_markdown_table(stripped):
+        return _split_markdown_table(stripped, max_tokens=max_tokens, tokenizer=tokenizer)
+
     separator = "\n\n" if "\n\n" in stripped else "\n"
     parts = [part.strip() for part in stripped.split(separator) if part.strip()]
     if len(parts) <= 1:
-        return _hard_split_text(stripped, max_tokens=max_tokens)
+        return _hard_split_text(stripped, max_tokens=max_tokens, tokenizer=tokenizer)
 
     packed: list[str] = []
     buffer: list[str] = []
@@ -645,7 +653,16 @@ def split_oversized_text(
     for part in parts:
         if _token_count(part, tokenizer) > max_tokens:
             flush()
-            packed.extend(_hard_split_text(part, max_tokens=max_tokens))
+            if _looks_like_markdown_table(part):
+                packed.extend(
+                    _split_markdown_table(
+                        part, max_tokens=max_tokens, tokenizer=tokenizer
+                    )
+                )
+            else:
+                packed.extend(
+                    _hard_split_text(part, max_tokens=max_tokens, tokenizer=tokenizer)
+                )
             continue
         trial = separator.join(buffer + [part]) if buffer else part
         if buffer and _token_count(trial, tokenizer) > max_tokens:
@@ -665,7 +682,89 @@ def _token_count(text: str, tokenizer: Any | None) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def _hard_split_text(text: str, *, max_tokens: int) -> list[str]:
+def _hard_split_text(
+    text: str,
+    *,
+    max_tokens: int,
+    tokenizer: Any | None = None,
+) -> list[str]:
+    del tokenizer
     window = max(64, max_tokens * 4)
     overlap = min(150, max(0, window // 6))
     return chunk_text(text, chunk_size=window, overlap=overlap)
+
+
+def _looks_like_markdown_table(text: str) -> bool:
+    rows = 0
+    for line in text.splitlines():
+        if _is_table_row(line):
+            rows += 1
+            if rows >= 2:
+                return True
+    return False
+
+
+def _is_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return bool(_TABLE_ROW_RE.match(stripped)) and stripped.count("|") >= 2
+
+
+def _is_table_sep(line: str) -> bool:
+    return bool(_TABLE_SEP_RE.match(line.strip()))
+
+
+def _split_markdown_table(
+    text: str,
+    *,
+    max_tokens: int,
+    tokenizer: Any | None = None,
+) -> list[str]:
+    """Keep whole table rows together and repeat the header in each piece."""
+    lines = text.splitlines()
+    header_idx = None
+    for index, line in enumerate(lines[:-1]):
+        if _is_table_row(line) and _is_table_sep(lines[index + 1]):
+            header_idx = index
+            break
+
+    if header_idx is None:
+        prefix: list[str] = []
+        rows = lines
+        header_block: list[str] = []
+    else:
+        prefix = lines[:header_idx]
+        header_block = [lines[header_idx], lines[header_idx + 1]]
+        rows = lines[header_idx + 2 :]
+
+    packed: list[str] = []
+    buffer_rows: list[str] = []
+
+    def emit(current_rows: list[str]) -> None:
+        if not current_rows and not (prefix and not packed):
+            return
+        parts = []
+        if prefix and not packed:
+            parts.extend(prefix)
+        parts.extend(header_block)
+        parts.extend(current_rows)
+        packed.append("\n".join(part for part in parts if part is not None).strip())
+
+    for row in rows:
+        if not row.strip():
+            continue
+        trial_rows = buffer_rows + [row]
+        trial_parts = []
+        if prefix and not packed:
+            trial_parts.extend(prefix)
+        trial_parts.extend(header_block)
+        trial_parts.extend(trial_rows)
+        trial = "\n".join(trial_parts).strip()
+        if buffer_rows and _token_count(trial, tokenizer) > max_tokens:
+            emit(buffer_rows)
+            buffer_rows = [row]
+            continue
+        buffer_rows.append(row)
+
+    if buffer_rows or (prefix and not packed):
+        emit(buffer_rows)
+    return packed or [text.strip()]

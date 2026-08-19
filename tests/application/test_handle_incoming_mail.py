@@ -1,7 +1,10 @@
 from mail_gateway.application.handle_incoming_mail import (
     ADMIN_FALLBACK_TEXT,
+    INSUFFICIENT_DOCS_TEXT,
+    UNVERIFIED_DRAFT_TEXT,
     HandleIncomingMail,
 )
+from mail_gateway.application.render_answer import NO_SOURCES_TEXT, SOURCES_HEADING
 from mail_gateway.domain.models import ConversationTurn, DocumentChunk, IncomingMessage, Reply
 
 
@@ -53,9 +56,11 @@ def test_sends_assistant_reply() -> None:
     handle(_message())
 
     assert len(sender.sent) == 1
-    assert sender.sent[0].body == "Answer from AI"
+    assert "Answer from AI" in sender.sent[0].body
+    assert sender.sent[0].html is True
     assert sender.sent[0].conversation_id == "conv-1"
     assert sender.sent[0].in_reply_to_item_id == "item-1"
+    assert NO_SOURCES_TEXT in sender.sent[0].body
     assert len(assistant.calls[0].messages) == 1
     assert assistant.calls[0].messages[0].body == "Please help"
 
@@ -67,7 +72,7 @@ def test_uses_admin_fallback_when_no_reply() -> None:
 
     handle(_message())
 
-    assert sender.sent[0].body == ADMIN_FALLBACK_TEXT
+    assert ADMIN_FALLBACK_TEXT in sender.sent[0].body
 
 
 def test_uses_admin_fallback_when_empty_reply() -> None:
@@ -77,7 +82,7 @@ def test_uses_admin_fallback_when_empty_reply() -> None:
 
     handle(_message())
 
-    assert sender.sent[0].body == ADMIN_FALLBACK_TEXT
+    assert ADMIN_FALLBACK_TEXT in sender.sent[0].body
 
 
 def test_passes_conversation_history_to_assistant() -> None:
@@ -147,8 +152,44 @@ def test_attaches_rag_context_from_retriever() -> None:
 
     assert retriever.calls == ["Please help"]
     assert assistant.calls[0].rag_context is not None
-    assert "faq.md" in assistant.calls[0].rag_context
+    assert "Документ: faq.md" in assistant.calls[0].rag_context
+    assert "[1]" not in assistant.calls[0].rag_context
     assert "docs say reboot" in assistant.calls[0].rag_context
+    assert assistant.calls[0].rag_chunks[0].source_path == "faq.md"
+    assert SOURCES_HEADING in sender.sent[0].body
+    assert "faq.md" in sender.sent[0].body
+
+
+def test_empty_retriever_does_not_call_assistant() -> None:
+    assistant = FakeAssistant("should not run")
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=assistant,
+        mail_sender=sender,
+        document_retriever=FakeRetriever([]),
+    )
+
+    handle(_message())
+
+    assert assistant.calls == []
+    assert INSUFFICIENT_DOCS_TEXT in sender.sent[0].body
+
+
+def test_unverified_draft_when_assistant_returns_none_with_chunks() -> None:
+    assistant = FakeAssistant(None)
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=assistant,
+        mail_sender=sender,
+        document_retriever=FakeRetriever(
+            [DocumentChunk(text="fact", source_path="guide.pdf", chunk_index=0)]
+        ),
+    )
+
+    handle(_message())
+
+    assert UNVERIFIED_DRAFT_TEXT in sender.sent[0].body
+    assert "guide.pdf" in sender.sent[0].body
 
 
 def test_ignores_own_bot_email_silently() -> None:

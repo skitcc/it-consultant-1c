@@ -34,6 +34,8 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.rerank_enabled is True
     assert settings.rerank_model == "bge-reranker-v2-m3"
     assert settings.rerank_num_predict == 256
+    assert settings.ollama_temperature == 0.0
+    assert settings.ollama_top_p == 0.1
     assert settings.watch_path == "/var/db"
     assert settings.debounce_seconds == 1.5
     assert settings.log_level == "DEBUG"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 
-from exchangelib import Account, Message
+from exchangelib import Account, HTMLBody, Message
 
 from mail_gateway.domain.models import Reply
 from mail_gateway.ports import MailSender
@@ -45,14 +45,16 @@ class EwsMailSender(MailSender):
             subject = f"Re: {subject}"
 
         logger.info(
-            "Sending EWS reply conversation_id=%s in_reply_to=%s",
+            "Sending EWS reply conversation_id=%s in_reply_to=%s html=%s",
             reply.conversation_id,
             reply.in_reply_to_item_id,
+            reply.html,
         )
         # create_reply + explicit body avoids dumping the whole quoted thread
         # into Sent Items (which later pollutes model history).
-        draft = item.create_reply(subject=subject, body=reply.body)
-        draft.body = reply.body
+        body = HTMLBody(reply.body) if reply.html else reply.body
+        draft = item.create_reply(subject=subject, body=body)
+        draft.body = body
         draft.send()
         logger.info(
             "EWS reply sent conversation_id=%s in_reply_to=%s elapsed=%.3fs",

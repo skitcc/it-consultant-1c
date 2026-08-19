@@ -256,6 +256,27 @@ def test_split_oversized_text_splits_paragraphs() -> None:
     assert part_b in pieces[1]
 
 
+def test_split_oversized_text_keeps_table_rows_and_repeats_header() -> None:
+    table = (
+        "| Этап | Условие |\n"
+        "|------|---------|\n"
+        "| Intern 1 | адаптация |\n"
+        "| K0-2 | PM готов покупать по K0 |\n"
+        "| K1 | после K0-2 |"
+    )
+    pieces = split_oversized_text(
+        table,
+        max_tokens=20,
+        tokenizer=_CountingTokenizer(),
+    )
+    assert len(pieces) >= 2
+    joined = "\n".join(pieces)
+    assert "K0-2 | PM готов покупать по K0" in joined
+    assert all("| Этап | Условие |" in piece for piece in pieces)
+    for piece in pieces:
+        assert "K0-2" not in piece or "покупать по K1" not in piece
+
+
 def test_vlm_http_logging_records_chat_completions(monkeypatch, caplog) -> None:
     import logging as logging_mod
 

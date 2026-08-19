@@ -9,6 +9,7 @@ from exchangelib import Account, Message, Q
 from exchangelib.properties import ConversationId
 
 from mail_gateway.application.clean_email_body import clean_email_body
+from mail_gateway.application.render_answer import strip_sources_footer
 from mail_gateway.domain.models import ConversationTurn
 from mail_gateway.ports import ConversationHistoryLoader
 
@@ -23,7 +24,32 @@ def _body_text(message: Message) -> str:
         raw = ""
     else:
         raw = str(message.body)
-    return clean_email_body(raw)
+    return clean_email_body(strip_sources_footer(_strip_html(raw)))
+
+
+def _strip_html(text: str) -> str:
+    if "<" not in text or ">" not in text:
+        return text
+    from html.parser import HTMLParser
+
+    class _TextExtractor(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+
+        def handle_data(self, data: str) -> None:
+            if data:
+                self.parts.append(data)
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            del attrs
+            if tag.lower() in {"p", "br", "tr", "li", "h2", "h3"}:
+                self.parts.append("\n")
+
+    parser = _TextExtractor()
+    parser.feed(text)
+    parser.close()
+    return "\n".join(line.strip() for line in "".join(parser.parts).splitlines())
 
 
 def _from_address(message: Message) -> str:

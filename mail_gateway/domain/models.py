@@ -37,6 +37,7 @@ class IncomingMessage:
     message_id: str | None = None
     messages: tuple[ConversationTurn, ...] = field(default_factory=tuple)
     rag_context: str | None = None
+    rag_chunks: tuple[DocumentChunk, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,7 @@ class Reply:
     in_reply_to_item_id: str
     in_reply_to_change_key: str
     body: str
+    html: bool = True
 
 
 def turn_from_incoming(message: IncomingMessage, *, role: Role = "user") -> ConversationTurn:
@@ -66,3 +68,12 @@ def with_messages(
 
 def with_rag_context(message: IncomingMessage, rag_context: str | None) -> IncomingMessage:
     return replace(message, rag_context=rag_context)
+
+
+def with_rag_chunks(
+    message: IncomingMessage,
+    chunks: tuple[DocumentChunk, ...] | list[DocumentChunk],
+    *,
+    rag_context: str | None,
+) -> IncomingMessage:
+    return replace(message, rag_chunks=tuple(chunks), rag_context=rag_context)

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
 from mail_gateway.adapters.assistant.payload import (
     build_assistant_payload,
+    build_verifier_payload,
     log_assistant_payload,
 )
 from mail_gateway.domain.models import IncomingMessage
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class OllamaAssistant(Assistant):
-    """Maps our payload to Ollama chat messages and returns the model reply."""
+    """Two-layer grounded chat: draft, then verify against the same chunks."""
 
     def __init__(
         self,
@@ -25,11 +27,15 @@ class OllamaAssistant(Assistant):
         base_url: str = "http://127.0.0.1:11434",
         model: str,
         timeout_sec: float = 300.0,
+        temperature: float = 0.0,
+        top_p: float = 0.1,
         system_prompt: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_sec
+        self._temperature = temperature
+        self._top_p = top_p
         self._system_prompt = system_prompt
 
     def ask(self, message: IncomingMessage) -> str | None:
@@ -39,9 +45,39 @@ class OllamaAssistant(Assistant):
         )
         log_assistant_payload(
             payload,
-            destination=f"ollama:{self._base_url} model={self._model}",
+            destination=f"ollama:{self._base_url} model={self._model} layer=1",
         )
+        draft = self._chat(payload, layer=1, conversation_id=message.conversation_id)
+        if not draft:
+            return None
 
+        rag_context = (message.rag_context or "").strip()
+        if not rag_context:
+            return draft
+
+        verifier = build_verifier_payload(
+            conversation_id=message.conversation_id,
+            draft=draft,
+            rag_context=rag_context,
+        )
+        log_assistant_payload(
+            verifier,
+            destination=f"ollama:{self._base_url} model={self._model} layer=2",
+        )
+        verified = self._chat(
+            verifier,
+            layer=2,
+            conversation_id=message.conversation_id,
+        )
+        if not verified:
+            logger.warning(
+                "Verifier returned empty conversation_id=%s; dropping draft",
+                message.conversation_id,
+            )
+            return None
+        return verified
+
+    def _chat(self, payload: dict, *, layer: int, conversation_id: str) -> str | None:
         ollama_messages: list[dict[str, str]] = [
             {"role": "system", "content": payload["system_prompt"]},
         ]
@@ -55,12 +91,22 @@ class OllamaAssistant(Assistant):
             "model": self._model,
             "messages": ollama_messages,
             "stream": False,
+            "think": True,
+            "options": {
+                "temperature": self._temperature,
+                "top_p": self._top_p,
+            },
         }
+        started_at = time.perf_counter()
         logger.info(
-            "Calling Ollama model=%s conversation_id=%s messages=%s",
+            "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
+            "temperature=%s top_p=%s",
+            layer,
             self._model,
-            message.conversation_id,
+            conversation_id,
             len(payload["messages"]),
+            self._temperature,
+            self._top_p,
         )
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(
@@ -70,13 +116,33 @@ class OllamaAssistant(Assistant):
             response.raise_for_status()
             data = response.json()
 
-        content = (
-            (data.get("message") or {}).get("content")
-            if isinstance(data, dict)
-            else None
+        elapsed = time.perf_counter() - started_at
+        message = data.get("message") if isinstance(data, dict) else None
+        thinking = ""
+        content = None
+        if isinstance(message, dict):
+            thinking = str(message.get("thinking") or "").strip()
+            content = message.get("content")
+        if thinking:
+            logger.debug(
+                "Ollama thinking layer=%s conversation_id=%s chars=%s",
+                layer,
+                conversation_id,
+                len(thinking),
+            )
+        logger.info(
+            "Ollama layer=%s done conversation_id=%s elapsed=%.3fs content_chars=%s",
+            layer,
+            conversation_id,
+            elapsed,
+            len(str(content or "")),
         )
         if content is None:
-            logger.warning("Ollama returned empty message content: %s", data)
+            logger.warning(
+                "Ollama layer=%s returned empty message content conversation_id=%s",
+                layer,
+                conversation_id,
+            )
             return None
         text = str(content).strip()
         return text or None
