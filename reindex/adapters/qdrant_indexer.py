@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
@@ -207,18 +208,31 @@ class QdrantIndexer:
             logger.info("Skip empty document %s", relative)
             return [], None
 
+        logger.info("Embed start path=%s chunks=%s", relative, len(chunks))
+        started = time.perf_counter()
+        try:
+            vectors = self._embedder.embed_documents([chunk.text for chunk in chunks])
+        except Exception:
+            logger.exception("Failed to embed document %s chunks=%s", relative, len(chunks))
+            return [], None
+        logger.info(
+            "Embed done path=%s chunks=%s elapsed=%.2fs",
+            relative,
+            len(vectors),
+            time.perf_counter() - started,
+        )
+        if len(vectors) != len(chunks):
+            logger.error(
+                "Embedding count mismatch path=%s got=%s expected=%s",
+                relative,
+                len(vectors),
+                len(chunks),
+            )
+            return [], None
+
         points: list[qmodels.PointStruct] = []
         vector_size: int | None = None
-        for index, chunk in enumerate(chunks):
-            try:
-                vector = self._embedder.embed(chunk.text)
-            except Exception:
-                logger.exception(
-                    "Failed to embed chunk path=%s index=%s",
-                    relative,
-                    index,
-                )
-                continue
+        for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
             if vector_size is None:
                 vector_size = len(vector)
             elif len(vector) != vector_size:
@@ -333,7 +347,7 @@ class QdrantIndexer:
                 )
             ),
         )
-        logger.info("Qdrant deleted source=%s", relative)
+        logger.debug("Qdrant deleted source=%s", relative)
 
     def _delete_prefix(self, prefix: str) -> None:
         if not self._client.collection_exists(self._collection):

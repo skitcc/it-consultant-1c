@@ -214,7 +214,7 @@ def test_ollama_embedder_posts_prompt(monkeypatch) -> None:
     assert vector == [0.1, 0.2, 0.3]
     assert captured["url"] == "http://ollama:11434/api/embed"
     assert captured["json"]["model"] == "nomic-embed-text"
-    assert captured["json"]["input"] == "hello docs"
+    assert captured["json"]["input"] == ["hello docs"]
 
 
 def test_ollama_embedder_accepts_legacy_embedding_field(monkeypatch) -> None:
@@ -241,6 +241,37 @@ def test_ollama_embedder_accepts_legacy_embedding_field(monkeypatch) -> None:
     monkeypatch.setattr("common.embeddings.httpx.Client", FakeClient)
     embedder = OllamaEmbedder(base_url="http://ollama:11434")
     assert embedder.embed("hello") == [0.4, 0.5]
+
+
+def test_ollama_embedder_batches_documents(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"embeddings": [[0.1, 0.2], [0.3, 0.4]]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, json: dict):
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr("common.embeddings.httpx.Client", FakeClient)
+    embedder = OllamaEmbedder(base_url="http://ollama:11434")
+    vectors = embedder.embed_documents(["one", "two"])
+    assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+    assert captured["json"]["input"] == ["one", "two"]
 
 
 def test_apply_changes_upserts_one_file_without_recreating_collection(tmp_path: Path) -> None:

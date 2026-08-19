@@ -28,26 +28,65 @@ class OllamaEmbedder:
         return self._model
 
     def embed(self, text: str) -> list[float]:
-        prompt = text.strip()
-        if not prompt:
+        vectors = self.embed_documents([text])
+        return vectors[0]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        cleaned = [text.strip() for text in texts]
+        if not cleaned:
+            return []
+        if any(not item for item in cleaned):
             raise ValueError("Cannot embed empty text")
 
+        url = f"{self._base_url}/api/embed"
+        logger.debug(
+            "Ollama embed start model=%s batch=%s url=%s",
+            self._model,
+            len(cleaned),
+            url,
+        )
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(
-                f"{self._base_url}/api/embed",
-                json={"model": self._model, "input": prompt},
+                url,
+                json={"model": self._model, "input": cleaned},
             )
             response.raise_for_status()
             data = response.json()
 
-        embedding = _vector_from_ollama(data)
-        if embedding is None:
+        vectors = _vectors_from_ollama(data, expected=len(cleaned))
+        if vectors is None:
             keys = list(data) if isinstance(data, dict) else type(data).__name__
-            raise RuntimeError(f"Ollama returned no embedding; keys={keys}")
-        return embedding
+            raise RuntimeError(
+                f"Ollama returned unexpected embeddings; "
+                f"expected={len(cleaned)} keys={keys}"
+            )
+        logger.debug(
+            "Ollama embed done model=%s batch=%s dim=%s",
+            self._model,
+            len(vectors),
+            len(vectors[0]) if vectors else 0,
+        )
+        return vectors
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self.embed(text) for text in texts]
+
+def _vectors_from_ollama(data: object, *, expected: int) -> list[list[float]] | None:
+    if not isinstance(data, dict):
+        return None
+    embeddings = data.get("embeddings")
+    if isinstance(embeddings, list) and embeddings:
+        vectors: list[list[float]] = []
+        for item in embeddings:
+            parsed = _as_vector(item)
+            if parsed is None:
+                return None
+            vectors.append(parsed)
+        if len(vectors) == expected:
+            return vectors
+    if expected == 1:
+        single = _vector_from_ollama(data)
+        if single is not None:
+            return [single]
+    return None
 
 
 def _vector_from_ollama(data: object) -> list[float] | None:
