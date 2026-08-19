@@ -1,4 +1,4 @@
-"""Runtime configuration shared by API Gateway and knowledge_sync."""
+"""Runtime configuration shared by API Gateway and the file watcher."""
 
 from __future__ import annotations
 
@@ -63,6 +63,16 @@ class KnowledgeSettings(BaseSettings):
     index_extensions: str = Field(
         default=".txt,.md,.markdown,.rst,.log,.csv,.pdf,.docx,.pptx,.xlsx,.xls,.html,.htm",
         alias="INDEX_EXTENSIONS",
+    )
+    watch_path: str = Field(
+        default="/var/lib/it-consultant/owui-data/uploads",
+        alias="WATCH_PATH",
+    )
+    debounce_seconds: float = Field(default=1.0, ge=0.0, alias="DEBOUNCE_SECONDS")
+    max_upload_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        gt=0,
+        alias="MAX_UPLOAD_BYTES",
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
