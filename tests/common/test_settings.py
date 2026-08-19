@@ -33,6 +33,7 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.rag_top_k == 8
     assert settings.rerank_enabled is True
     assert settings.rerank_model == "bge-reranker-v2-m3"
+    assert settings.rerank_num_predict == 256
     assert settings.watch_path == "/var/db"
     assert settings.debounce_seconds == 1.5
     assert settings.log_level == "DEBUG"

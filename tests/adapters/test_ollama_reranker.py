@@ -31,6 +31,8 @@ def test_parse_relevance_score_variants() -> None:
     assert parse_relevance_score("score=0.81 extra") == 0.81
     assert parse_relevance_score("") is None
     assert parse_relevance_score("hello world") is None
+    assert parse_relevance_score("1.01") is None
+    assert parse_relevance_score("-0.01") is None
 
 
 def test_score_from_logprobs_yes_no() -> None:
@@ -103,6 +105,63 @@ def test_ollama_reranker_scores_via_chat_yes_no(monkeypatch) -> None:
     assert "<Query>: printer\n" in user
     assert "<Document>:" in user
     assert first["options"]["temperature"] == 0.0
+    assert first["options"]["num_predict"] == 256
+    assert first["format"] == {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+    }
+
+
+def test_ollama_reranker_retries_without_thinking_when_score_missing(
+    monkeypatch,
+) -> None:
+    chunks = [
+        DocumentChunk(text="direct answer", source_path="f", chunk_index=0, score=0.1),
+        DocumentChunk(text="weak answer", source_path="f", chunk_index=1, score=0.8),
+    ]
+    contents = iter(["", "0.90", "not a score", "0.20"])
+    seen: list[dict] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "message": {"content": next(contents)},
+                "done_reason": "length",
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, json: dict):
+            del url
+            seen.append(json)
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "mail_gateway.adapters.rag.ollama_reranker.httpx.Client",
+        FakeClient,
+    )
+
+    ranked = OllamaReranker(model=_MODEL, num_predict=200).rerank("query", chunks)
+
+    assert [chunk.text for chunk in ranked] == ["direct answer", "weak answer"]
+    assert [chunk.score for chunk in ranked] == [0.9, 0.2]
+    assert len(seen) == 4
+    assert seen[0]["options"]["num_predict"] == 200
+    assert "think" not in seen[0]
+    assert seen[1]["options"]["num_predict"] == 16
+    assert seen[1]["think"] is False
 
 
 def test_ollama_reranker_falls_back_on_http_error(monkeypatch) -> None:

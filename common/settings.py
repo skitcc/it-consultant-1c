@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     )
     rerank_base_url: str | None = Field(default=None, alias="RERANK_BASE_URL")
     rerank_timeout_sec: float = Field(default=60.0, alias="RERANK_TIMEOUT_SEC")
+    rerank_num_predict: int = Field(
+        default=256,
+        ge=1,
+        alias="RERANK_NUM_PREDICT",
+    )
     chunk_size: int = Field(default=1024, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=150, alias="CHUNK_OVERLAP")
 

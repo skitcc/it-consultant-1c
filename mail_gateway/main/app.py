@@ -51,6 +51,7 @@ def build_reranker(settings: Settings) -> Reranker:
         base_url=base_url,
         model=settings.rerank_model,
         timeout_sec=settings.rerank_timeout_sec,
+        num_predict=settings.rerank_num_predict,
     )
 
 

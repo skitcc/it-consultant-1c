@@ -158,8 +158,11 @@ pytest
 
 Шлюз подтягивает тред из Exchange, чистит тела, достаёт кандидатов из Qdrant,
 переранжирует их через Ollama `POST /api/chat` (`RERANK_MODEL` = Qwen3-Reranker:
-Instruct/Query/Document → `yes`/`no` или P(yes) из logprobs), дополняет соседними
-чанками и логирует внутренний payload:
+Instruct/Query/Document → числовой score `0.00..1.00`), дополняет соседними чанками
+и логирует внутренний payload. Для reasoning-модели `RERANK_NUM_PREDICT` включает
+токены внутреннего thinking; если итоговый score не получен, запрос один раз
+повторяется с отключённым thinking. При недоступности модели сохраняется fallback
+на исходные vector scores:
 
 ```json
 {
@@ -176,6 +179,12 @@ Instruct/Query/Document → `yes`/`no` или P(yes) из logprobs), допол�
 В Ollama уходит `POST /api/chat` с `messages`: `system` + история `user`/`assistant`
 (`body` → `content`). Системный промпт можно переопределить через `AI_SYSTEM_PROMPT`.
 Модель с Qdrant напрямую не общается — retrieval делает `mail_gateway`.
+
+При `LOG_LEVEL=INFO` reranker пишет начало и итог обработки: модель, число
+кандидатов, время и лучший score. При `LOG_LEVEL=DEBUG` дополнительно видны
+`source`, `chunk_index`, исходный vector score, итоговый rerank score и позиция
+каждого чанка, а также время и token counters каждого запроса к Ollama. Текст
+чанка в эти строки не выводится.
 
 ---
 
@@ -242,7 +251,8 @@ tests/reindex/
 | `RAG_CANDIDATES` | Сколько кандидатов брать из Qdrant | `20` |
 | `RAG_TOP_K` | Сколько чанков оставить после rerank | `8` |
 | `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
-| `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama `POST /api/chat` (Qwen3 yes/no) | `true` / `dengcao/Qwen3-Reranker-8B:Q8_0` |
+| `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama `POST /api/chat` (score `0..1`) | `true` / `dengcao/Qwen3-Reranker-8B:Q8_0` |
+| `RERANK_NUM_PREDICT` | Лимит генерации reranker с учётом thinking; при исчерпании выполняется короткий retry без thinking | `256` |
 | `CHUNK_SIZE` | Max tokens для HybridChunker (слишком большие таблицы режутся дальше) | `1024` |
 | `PICTURE_DESCRIPTION_ENABLED` | VLM-описания картинок (enrichment) | `true` |
 | `VLM_MODEL` | Vision-модель в том же Ollama | `qwen3-vl:8b` |

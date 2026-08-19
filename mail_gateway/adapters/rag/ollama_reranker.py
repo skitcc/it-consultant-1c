@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import re
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -25,15 +26,32 @@ _YES_NO_TOKEN_RE = re.compile(
 _YES = frozenset({"yes", "true", "relevant", "да"})
 _NO = frozenset({"no", "false", "irrelevant", "нет"})
 
-_SYSTEM_PROMPT = (
-    "Judge whether the Document meets the requirements based on the Query "
-    'and the Instruct provided. Note that the answer can only be "yes" or "no".'
-)
+_SYSTEM_PROMPT = """You are a strict document relevance evaluator.
+
+Evaluate only whether the Document contains information that can answer the Query.
+Match the requested entity, product, operation, version, date or period, metric,
+units, and conditions exactly. Do not infer missing facts and do not reward a
+document merely for sharing the same topic.
+
+Use this scale:
+- 0.90-1.00: complete, direct answer with all material constraints matching;
+- 0.70-0.89: substantially answers the query, with only minor details missing;
+- 0.40-0.69: useful partial answer, but important requested information is missing;
+- 0.10-0.39: weak topical relation, wrong period/entity/metric, or no requested value;
+- 0.00-0.09: irrelevant or contradictory.
+
+The final answer must be exactly one number from 0.00 to 1.00. Do not put an
+explanation, label, percent sign, or any other text in the final answer."""
 _DEFAULT_INSTRUCT = (
     "Given a user question about 1C and company IT documentation, "
-    "retrieve relevant passages that answer the query"
+    "score how completely and precisely this passage can answer the query"
 )
 _QWEN_MODEL = "dengcao/Qwen3-Reranker-8B:Q8_0"
+_SCORE_FORMAT = {
+    "type": "number",
+    "minimum": 0.0,
+    "maximum": 1.0,
+}
 
 
 class ScorePassthroughReranker:
@@ -55,9 +73,9 @@ class ScorePassthroughReranker:
 class OllamaReranker:
     """Score candidates with a Qwen3-Reranker via Ollama ``POST /api/chat``.
 
-    Official scoring uses P(yes) vs P(no) at the next token. Ollama has no
-    ``/api/rerank``; we send the Qwen3 Instruct/Query/Document chat turn and
-    prefer logprobs when present, otherwise parse ``yes``/``no`` from content.
+    Ollama has no ``/api/rerank``; we send an Instruct/Query/Document chat turn
+    and require a numeric relevance score. Legacy yes/no and logprob responses
+    remain supported as a compatibility fallback.
     """
 
     def __init__(
@@ -66,11 +84,13 @@ class OllamaReranker:
         base_url: str = "http://127.0.0.1:11434",
         model: str = _QWEN_MODEL,
         timeout_sec: float = 60.0,
+        num_predict: int = 256,
         instruct: str = _DEFAULT_INSTRUCT,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_sec
+        self._num_predict = num_predict
         self._instruct = instruct
         self._fallback = ScorePassthroughReranker()
 
@@ -81,52 +101,116 @@ class OllamaReranker:
     ) -> list[DocumentChunk]:
         items = list(chunks)
         if len(items) <= 1:
+            logger.debug(
+                "Rerank skipped model=%s candidates=%s reason=not_enough_candidates",
+                self._model,
+                len(items),
+            )
             return items
 
-        documents = [chunk.text for chunk in items]
+        started_at = time.perf_counter()
+        logger.info(
+            "Rerank started model=%s candidates=%s query_chars=%s num_predict=%s",
+            self._model,
+            len(items),
+            len(query.strip()),
+            self._num_predict,
+        )
         try:
-            scores = self._score_documents(query, documents)
+            scores = self._score_documents(query, items)
         except Exception:
             logger.exception(
-                "Rerank failed model=%s; falling back to vector scores",
+                "Rerank failed model=%s elapsed=%.3fs; "
+                "falling back to vector scores",
                 self._model,
+                time.perf_counter() - started_at,
             )
             return self._fallback.rerank(query, items)
 
         if scores is None or len(scores) != len(items):
             logger.warning(
-                "Rerank returned unexpected scores model=%s; using vector scores",
+                "Rerank returned unexpected scores model=%s elapsed=%.3fs; "
+                "using vector scores",
                 self._model,
+                time.perf_counter() - started_at,
             )
             return self._fallback.rerank(query, items)
 
+        scored = sorted(
+            zip(items, scores, strict=True),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
         ranked = [
             replace(chunk, score=score)
-            for chunk, score in sorted(
-                zip(items, scores, strict=True),
-                key=lambda pair: pair[1],
-                reverse=True,
-            )
+            for chunk, score in scored
         ]
+        for rank, (chunk, score) in enumerate(scored, start=1):
+            logger.debug(
+                "Rerank ranking rank=%s source=%r chunk_index=%s "
+                "vector_score=%s rerank_score=%.4f headings=%r",
+                rank,
+                chunk.source_path,
+                chunk.chunk_index,
+                _format_score(chunk.score),
+                score,
+                chunk.headings,
+            )
         logger.info(
-            "Reranked candidates model=%s count=%s top_score=%.4f",
+            "Rerank completed model=%s candidates=%s elapsed=%.3fs top_score=%.4f",
             self._model,
             len(ranked),
+            time.perf_counter() - started_at,
             ranked[0].score if ranked and ranked[0].score is not None else -1.0,
         )
         return ranked
 
-    def _score_documents(self, query: str, documents: list[str]) -> list[float] | None:
+    def _score_documents(
+        self,
+        query: str,
+        chunks: Sequence[DocumentChunk],
+    ) -> list[float] | None:
         scores: list[float] = []
         parsed = 0
         with httpx.Client(timeout=self._timeout) as client:
-            for document in documents:
-                score = self._score_document(client, query, document)
+            for position, chunk in enumerate(chunks, start=1):
+                started_at = time.perf_counter()
+                logger.debug(
+                    "Rerank candidate start candidate=%s/%s source=%r "
+                    "chunk_index=%s vector_score=%s chars=%s",
+                    position,
+                    len(chunks),
+                    chunk.source_path,
+                    chunk.chunk_index,
+                    _format_score(chunk.score),
+                    len(chunk.text),
+                )
+                score = self._score_document(client, query, chunk.text)
                 if score is None:
                     scores.append(0.0)
+                    logger.debug(
+                        "Rerank candidate done candidate=%s/%s source=%r "
+                        "chunk_index=%s parsed=false rerank_score=0.0000 "
+                        "elapsed=%.3fs",
+                        position,
+                        len(chunks),
+                        chunk.source_path,
+                        chunk.chunk_index,
+                        time.perf_counter() - started_at,
+                    )
                     continue
                 parsed += 1
                 scores.append(score)
+                logger.debug(
+                    "Rerank candidate done candidate=%s/%s source=%r "
+                    "chunk_index=%s parsed=true rerank_score=%.4f elapsed=%.3fs",
+                    position,
+                    len(chunks),
+                    chunk.source_path,
+                    chunk.chunk_index,
+                    score,
+                    time.perf_counter() - started_at,
+                )
         if parsed == 0:
             return None
         return scores
@@ -137,6 +221,26 @@ class OllamaReranker:
         query: str,
         document: str,
     ) -> float | None:
+        score = self._request_score(client, query, document, disable_thinking=False)
+        if score is not None:
+            return score
+
+        logger.warning(
+            "Reranker returned no valid 0..1 score model=%s; "
+            "retrying with thinking disabled",
+            self._model,
+        )
+        return self._request_score(client, query, document, disable_thinking=True)
+
+    def _request_score(
+        self,
+        client: httpx.Client,
+        query: str,
+        document: str,
+        *,
+        disable_thinking: bool,
+    ) -> float | None:
+        started_at = time.perf_counter()
         payload = {
             "model": self._model,
             "messages": [
@@ -146,15 +250,40 @@ class OllamaReranker:
             "stream": False,
             "logprobs": True,
             "top_logprobs": 8,
+            "format": _SCORE_FORMAT,
             "options": {
                 "temperature": 0.0,
-                "num_predict": 16,
+                "num_predict": 16 if disable_thinking else self._num_predict,
             },
         }
+        if disable_thinking:
+            payload["think"] = False
         response = client.post(f"{self._base_url}/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
-        return score_from_ollama_response(data)
+        score = score_from_ollama_response(data)
+        logger.debug(
+            "Rerank Ollama response model=%s thinking_disabled=%s "
+            "elapsed=%.3fs done_reason=%s prompt_tokens=%s generated_tokens=%s "
+            "score=%s",
+            self._model,
+            disable_thinking,
+            time.perf_counter() - started_at,
+            data.get("done_reason") if isinstance(data, dict) else None,
+            data.get("prompt_eval_count") if isinstance(data, dict) else None,
+            data.get("eval_count") if isinstance(data, dict) else None,
+            _format_score(score),
+        )
+        if score is None:
+            logger.debug(
+                "Unparseable reranker response model=%s disable_thinking=%s "
+                "done_reason=%s content=%r",
+                self._model,
+                disable_thinking,
+                data.get("done_reason") if isinstance(data, dict) else None,
+                _response_content(data),
+            )
+        return score
 
 
 def _user_content(instruct: str, query: str, document: str) -> str:
@@ -171,17 +300,30 @@ def score_from_ollama_response(data: object) -> float | None:
         return None
     from_logprobs = score_from_logprobs(data)
     if from_logprobs is not None:
-        return from_logprobs
+        return _valid_score(from_logprobs)
     message = data.get("message")
     if isinstance(message, dict):
         from_logprobs = score_from_logprobs(message)
         if from_logprobs is not None:
-            return from_logprobs
+            return _valid_score(from_logprobs)
         content = str(message.get("content") or "")
         parsed = parse_relevance_score(content)
         if parsed is not None:
             return parsed
     return parse_relevance_score(str(data.get("response") or ""))
+
+
+def _response_content(data: object) -> str:
+    if not isinstance(data, dict):
+        return ""
+    message = data.get("message")
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(data.get("response") or "")
+
+
+def _format_score(score: float | None) -> str:
+    return "none" if score is None else f"{score:.4f}"
 
 
 def score_from_logprobs(payload: object) -> float | None:
@@ -276,11 +418,11 @@ def parse_relevance_score(text: str) -> float | None:
             raw = data.get("score", data.get("relevance_score", data.get("relevance")))
             if raw is not None:
                 try:
-                    return float(raw)
+                    return _valid_score(float(raw))
                 except (TypeError, ValueError):
                     pass
         elif isinstance(data, (int, float)):
-            return float(data)
+            return _valid_score(float(data))
 
     matches = list(_YES_NO_TOKEN_RE.finditer(cleaned))
     if matches:
@@ -292,7 +434,7 @@ def parse_relevance_score(text: str) -> float | None:
 
     token = cleaned.split()[0].rstrip(",;:")
     try:
-        return float(token)
+        return _valid_score(float(token))
     except ValueError:
         pass
 
@@ -300,6 +442,12 @@ def parse_relevance_score(text: str) -> float | None:
     if match is None:
         return None
     try:
-        return float(match.group(0))
+        return _valid_score(float(match.group(0)))
     except ValueError:
         return None
+
+
+def _valid_score(value: float) -> float | None:
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return None
+    return value
