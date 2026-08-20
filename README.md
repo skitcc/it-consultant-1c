@@ -24,7 +24,7 @@ pip install -e ".[reindex,dev]"
 cp .env.example .env
 ```
 
-Заполните в `.env` поля `EWS_*` (и при необходимости `WATCH_PATH` / `DEBOUNCE_SECONDS`).
+Заполните в `.env` поля `EWS_*` и `ADMIN_EMAIL` (и при необходимости `WATCH_PATH` / `DEBOUNCE_SECONDS`).
 
 ## Установка на сервер (systemd)
 
@@ -119,7 +119,8 @@ tests/
 4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (соседи в том же разделе по `headings`) → фрагменты в `system_prompt`.
 5. Non-stream вызов Ollama `/v1/chat/completions`: черновик с `reasoning_effort=medium`. Второй проход (`OLLAMA_VERIFIER_ENABLED`) по тем же чанкам с `reasoning_effort=high` по умолчанию выключен.
 6. HTML-reply через EWS (таблицы, без Markdown и ссылок) + список использованных документов в конце.
-7. При обрыве streaming — reconnect.
+7. Сбой, недоставленный ответ или несколько неотвеченных запросов пользователя в той же переписке — WARNING в лог и письмо на `ADMIN_EMAIL`.
+8. При обрыве streaming — reconnect.
 
 `change_key` — версия объекта письма в Exchange. Вместе с `item_id` однозначно указывает на конкретную ревизию письма; без него `get`/`reply` могут упасть, если письмо уже изменилось.
 
