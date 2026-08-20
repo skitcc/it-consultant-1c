@@ -1,5 +1,9 @@
+import hashlib
+import math
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 from common.embeddings import OllamaEmbedder
 from reindex.adapters.qdrant_indexer import QdrantIndexer, file_content_hash
@@ -61,6 +65,123 @@ def test_qdrant_indexer_indexes_reader_chunks(tmp_path: Path) -> None:
     assert "обмен" in points[0].payload["text"]
     assert points[0].payload["headings"] == ["Intro"]
     assert len(points[0].payload["file_hash"]) == 64
+    assert points[0].payload["index_version"] == "table-aware-v2"
+    assert points[0].payload["chunk_type"] == "prose"
+
+
+def test_qdrant_indexer_stores_one_table_point_and_aggregates_parts(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    path = docs / "grades.pptx"
+    path.write_bytes(b"PK")
+
+    class TableReader:
+        def read(self, path: Path) -> list[DocumentChunk]:
+            del path
+            return [
+                DocumentChunk(
+                    text="| Этап | Условие |\n|---|---|\n| K0 | старт |\n| K1 | рост |",
+                    headings=("Грейды",),
+                    atomic=True,
+                    chunk_type="table",
+                    table_ref="#/tables/0",
+                    embedding_parts=("часть K0", "часть K1"),
+                    row_count=2,
+                )
+            ]
+
+    class PartEmbedder:
+        def embed(self, text: str) -> list[float]:
+            return self.embed_documents([text])[0]
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            assert texts == ["часть K0", "часть K1"]
+            return [[1.0, 0.0], [0.0, 1.0]]
+
+    client = _mock_client(exists=False)
+    indexer = QdrantIndexer(
+        qdrant_url="http://127.0.0.1:6333",
+        collection="docs",
+        embedder=PartEmbedder(),
+        document_reader=TableReader(),
+    )
+    indexer._client = client
+
+    indexer.reindex(str(docs))
+
+    points = client.upsert.call_args.kwargs["points"]
+    assert len(points) == 1
+    assert points[0].payload["chunk_type"] == "table"
+    assert points[0].payload["table_ref"] == "#/tables/0"
+    assert points[0].payload["row_count"] == 2
+    assert points[0].vector == [
+        pytest.approx(1 / math.sqrt(2)),
+        pytest.approx(1 / math.sqrt(2)),
+    ]
+
+
+def test_qdrant_indexer_filters_markup_only_chunks(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("source", encoding="utf-8")
+
+    class Reader:
+        def read(self, path: Path) -> list[DocumentChunk]:
+            del path
+            return [
+                DocumentChunk(text="|\n|----------------|"),
+                DocumentChunk(text="Полезный текст"),
+            ]
+
+    client = _mock_client(exists=False)
+    indexer = QdrantIndexer(
+        qdrant_url="http://127.0.0.1:6333",
+        collection="docs",
+        embedder=FakeEmbedder(),
+        document_reader=Reader(),
+    )
+    indexer._client = client
+
+    indexer.reindex(str(docs))
+
+    points = client.upsert.call_args.kwargs["points"]
+    assert len(points) == 1
+    assert points[0].payload["text"] == "Полезный текст"
+
+
+def test_file_hash_includes_index_algorithm_version(tmp_path: Path) -> None:
+    path = tmp_path / "guide.md"
+    payload = b"same source bytes"
+    path.write_bytes(payload)
+
+    assert file_content_hash(path) != hashlib.sha256(payload).hexdigest()
+
+
+def test_failed_reindex_keeps_existing_points(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "broken.pptx").write_bytes(b"PK")
+
+    class FailingReader:
+        def read(self, path: Path) -> list[DocumentChunk]:
+            del path
+            raise RuntimeError("table invariant failed")
+
+    client = _mock_client(exists=True)
+    indexer = QdrantIndexer(
+        qdrant_url="http://127.0.0.1:6333",
+        collection="docs",
+        embedder=FakeEmbedder(),
+        document_reader=FailingReader(),
+    )
+    indexer._client = client
+
+    indexer._upsert_file(str(docs), "broken.pptx", force=True)
+
+    client.delete.assert_not_called()
+    client.upsert.assert_not_called()
 
 
 def test_qdrant_indexer_skips_disallowed_extensions(tmp_path: Path) -> None:

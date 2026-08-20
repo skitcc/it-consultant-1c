@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import time
 import uuid
 from collections import defaultdict
@@ -13,7 +14,10 @@ from pathlib import Path
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
-from reindex.adapters.document_readers import build_default_document_reader
+from reindex.adapters.document_readers import (
+    build_default_document_reader,
+    is_useful_chunk_text,
+)
 from reindex.domain.changes import FsChange
 from reindex.domain.documents import iter_document_files
 from reindex.ports import DocumentReader, Embedder
@@ -23,6 +27,7 @@ logger = logging.getLogger(__name__)
 _POINT_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 _SCROLL_LIMIT = 100
 _HASH_CHUNK_SIZE = 1024 * 1024
+_INDEX_VERSION = "table-aware-v2"
 
 
 class QdrantIndexer:
@@ -176,9 +181,19 @@ class QdrantIndexer:
                 )
                 return
 
-        points, vector_size = self._embed_file(path, relative, content_hash)
-        if vector_size is None:
+        embedded = self._embed_file(path, relative, content_hash)
+        if embedded is None:
+            logger.error(
+                "Keeping existing Qdrant points after failed indexing source=%s",
+                relative,
+            )
+            return
+        points, vector_size = embedded
+        if not points:
             self._delete_source(relative)
+            return
+        if vector_size is None:
+            logger.error("Missing vector size source=%s; keeping existing points", relative)
             return
         self._ensure_collection(vector_size)
         self._delete_source(relative)
@@ -196,39 +211,79 @@ class QdrantIndexer:
         path: Path,
         relative: str,
         content_hash: str,
-    ) -> tuple[list[qmodels.PointStruct], int | None]:
+    ) -> tuple[list[qmodels.PointStruct], int | None] | None:
         try:
             chunks = list(self._document_reader.read(path))
         except Exception:
             logger.exception("Failed to read document %s", relative)
-            return [], None
+            return None
 
-        chunks = [chunk for chunk in chunks if chunk.text.strip()]
+        chunks = [
+            chunk
+            for chunk in chunks
+            if chunk.text.strip() and is_useful_chunk_text(chunk.text)
+        ]
         if not chunks:
             logger.info("Skip empty document %s", relative)
             return [], None
 
-        logger.info("Embed start path=%s chunks=%s", relative, len(chunks))
+        parts_by_chunk = []
+        for chunk in chunks:
+            parts = tuple(
+                part.strip()
+                for part in (chunk.embedding_parts or (chunk.text,))
+                if part.strip()
+            )
+            parts_by_chunk.append(parts or (chunk.text.strip(),))
+        embedding_inputs = [
+            part
+            for parts in parts_by_chunk
+            for part in parts
+        ]
+        logger.info(
+            "Embed start path=%s chunks=%s embedding_parts=%s",
+            relative,
+            len(chunks),
+            len(embedding_inputs),
+        )
         started = time.perf_counter()
         try:
-            vectors = self._embedder.embed_documents([chunk.text for chunk in chunks])
+            part_vectors = self._embedder.embed_documents(embedding_inputs)
         except Exception:
             logger.exception("Failed to embed document %s chunks=%s", relative, len(chunks))
-            return [], None
+            return None
         logger.info(
-            "Embed done path=%s chunks=%s elapsed=%.2fs",
+            "Embed done path=%s chunks=%s embedding_parts=%s elapsed=%.2fs",
             relative,
-            len(vectors),
+            len(chunks),
+            len(part_vectors),
             time.perf_counter() - started,
         )
-        if len(vectors) != len(chunks):
+        if len(part_vectors) != len(embedding_inputs):
             logger.error(
-                "Embedding count mismatch path=%s got=%s expected=%s",
+                "Embedding count mismatch path=%s got=%s expected_parts=%s",
                 relative,
-                len(vectors),
-                len(chunks),
+                len(part_vectors),
+                len(embedding_inputs),
             )
-            return [], None
+            return None
+
+        vectors: list[list[float]] = []
+        cursor = 0
+        for parts in parts_by_chunk:
+            count = len(parts)
+            grouped = part_vectors[cursor : cursor + count]
+            cursor += count
+            aggregated = _aggregate_vectors(grouped)
+            if aggregated is None:
+                logger.error(
+                    "Cannot aggregate embeddings path=%s chunk=%s parts=%s",
+                    relative,
+                    len(vectors),
+                    count,
+                )
+                return None
+            vectors.append(aggregated)
 
         points: list[qmodels.PointStruct] = []
         vector_size: int | None = None
@@ -248,9 +303,15 @@ class QdrantIndexer:
                 "chunk_index": index,
                 "text": chunk.text,
                 "file_hash": content_hash,
+                "index_version": _INDEX_VERSION,
+                "chunk_type": chunk.chunk_type,
             }
             if chunk.headings:
                 payload["headings"] = list(chunk.headings)
+            if chunk.table_ref:
+                payload["table_ref"] = chunk.table_ref
+            if chunk.row_count:
+                payload["row_count"] = chunk.row_count
             points.append(
                 qmodels.PointStruct(
                     id=str(_point_id(relative, index)),
@@ -397,7 +458,7 @@ class QdrantIndexer:
                 distance=qmodels.Distance.COSINE,
             ),
         )
-        for field in ("source_path", "file_hash"):
+        for field in ("source_path", "file_hash", "chunk_type", "table_ref"):
             try:
                 self._client.create_payload_index(
                     collection_name=self._collection,
@@ -413,12 +474,42 @@ class QdrantIndexer:
 
 
 def file_content_hash(path: Path) -> str:
-    """SHA-256 hex digest of file bytes."""
+    """SHA-256 of file bytes and the indexing algorithm version."""
     digest = hashlib.sha256()
+    digest.update(_INDEX_VERSION.encode("utf-8"))
+    digest.update(b"\0")
     with path.open("rb") as handle:
         while chunk := handle.read(_HASH_CHUNK_SIZE):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _aggregate_vectors(vectors: list[list[float]]) -> list[float] | None:
+    """Average unit vectors and normalize the result for cosine search."""
+    if not vectors or not vectors[0]:
+        return None
+    if len(vectors) == 1:
+        return [float(value) for value in vectors[0]]
+    size = len(vectors[0])
+    if any(len(vector) != size for vector in vectors):
+        return None
+
+    summed = [0.0] * size
+    used = 0
+    for vector in vectors:
+        norm = math.sqrt(sum(float(value) ** 2 for value in vector))
+        if norm <= 0:
+            continue
+        used += 1
+        for index, value in enumerate(vector):
+            summed[index] += float(value) / norm
+    if used == 0:
+        return None
+    averaged = [value / used for value in summed]
+    final_norm = math.sqrt(sum(value**2 for value in averaged))
+    if final_norm <= 0:
+        return None
+    return [value / final_norm for value in averaged]
 
 
 def _canonical_paths(path_hashes: dict[str, str]) -> dict[str, str]:
