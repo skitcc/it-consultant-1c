@@ -1,0 +1,117 @@
+# Four resident vLLM processes on one GPU. Numbers come from .env.
+# Primary launcher is scripts/vllm_up.sh (applies models.yaml + .env).
+# This file is the compose equivalent with the same defaults.
+
+x-vllm-common: &vllm-common
+  image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+  ipc: host
+  shm_size: "16gb"
+  restart: unless-stopped
+  volumes:
+    - ${HF_HOME:-/opt/hf-cache}:/root/.cache/huggingface
+  environment:
+    NVIDIA_VISIBLE_DEVICES: ${GPU_ID:-0}
+    HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+services:
+  vllm-llm:
+    <<: *vllm-common
+    container_name: vllm-llm
+    ports:
+      - "${LLM_PORT:-8001}:8000"
+    command:
+      - --model
+      - ${LLM_MODEL:-openai/gpt-oss-120b}
+      - --served-model-name
+      - ${LLM_SERVED_NAME:-llm}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - ${LLM_GPU_UTIL:-0.56}
+      - --max-model-len
+      - ${LLM_MAX_MODEL_LEN:-8192}
+      - --max-num-seqs
+      - ${LLM_MAX_NUM_SEQS:-4}
+      - --reasoning-parser
+      - openai_gptoss
+
+  vllm-rerank:
+    <<: *vllm-common
+    container_name: vllm-rerank
+    ports:
+      - "${RERANK_PORT:-8002}:8000"
+    command:
+      - --model
+      - ${RERANK_MODEL:-Qwen/Qwen3-Reranker-8B}
+      - --served-model-name
+      - ${RERANK_SERVED_NAME:-rerank}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - ${RERANK_GPU_UTIL:-0.13}
+      - --max-model-len
+      - ${RERANK_MAX_MODEL_LEN:-2048}
+      - --max-num-seqs
+      - ${RERANK_MAX_NUM_SEQS:-32}
+      - --runner
+      - pooling
+      - --hf_overrides
+      - '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+
+  vllm-vlm:
+    <<: *vllm-common
+    container_name: vllm-vlm
+    ports:
+      - "${VLM_PORT:-8003}:8000"
+    command:
+      - --model
+      - ${VLM_MODEL:-Qwen/Qwen3-VL-8B-Instruct}
+      - --served-model-name
+      - ${VLM_SERVED_NAME:-vlm}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - ${VLM_GPU_UTIL:-0.13}
+      - --max-model-len
+      - ${VLM_MAX_MODEL_LEN:-4096}
+      - --max-num-seqs
+      - ${VLM_MAX_NUM_SEQS:-2}
+      - --limit-mm-per-prompt
+      - '{"image":1}'
+
+  vllm-embed:
+    <<: *vllm-common
+    container_name: vllm-embed
+    ports:
+      - "${EMBED_PORT:-8004}:8000"
+    command:
+      - --model
+      - ${EMBED_MODEL:-nomic-ai/nomic-embed-text-v1.5}
+      - --served-model-name
+      - ${EMBED_SERVED_NAME:-embed}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - ${EMBED_GPU_UTIL:-0.06}
+      - --max-model-len
+      - ${EMBED_MAX_MODEL_LEN:-2048}
+      - --max-num-seqs
+      - ${EMBED_MAX_NUM_SEQS:-32}
+      - --runner
+      - pooling
+      - --trust-remote-code

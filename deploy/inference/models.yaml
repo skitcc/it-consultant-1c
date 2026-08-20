@@ -1,0 +1,55 @@
+# Catalog of vLLM services on GPU server 2.
+# Override numbers and extra args in .env (LLM_GPU_UTIL, RERANK_EXTRA_ARGS, ...).
+# Add another project model: copy a block, pick a free port, add a compose service.
+
+models:
+  - id: llm
+    role: llm
+    hf_id: openai/gpt-oss-120b
+    served_name: llm
+    port: 8001
+    gpu_memory_utilization: 0.56
+    max_model_len: 8192
+    max_num_seqs: 4
+    extra_args:
+      - --reasoning-parser
+      - openai_gptoss
+
+  - id: rerank
+    role: rerank
+    hf_id: Qwen/Qwen3-Reranker-8B
+    served_name: rerank
+    port: 8002
+    gpu_memory_utilization: 0.13
+    max_model_len: 2048
+    max_num_seqs: 32
+    extra_args:
+      - --runner
+      - pooling
+      - --hf_overrides
+      - '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+
+  - id: vlm
+    role: vlm
+    hf_id: Qwen/Qwen3-VL-8B-Instruct
+    served_name: vlm
+    port: 8003
+    gpu_memory_utilization: 0.13
+    max_model_len: 4096
+    max_num_seqs: 2
+    extra_args:
+      - --limit-mm-per-prompt
+      - '{"image":1}'
+
+  - id: embed
+    role: embed
+    hf_id: nomic-ai/nomic-embed-text-v1.5
+    served_name: embed
+    port: 8004
+    gpu_memory_utilization: 0.06
+    max_model_len: 2048
+    max_num_seqs: 32
+    extra_args:
+      - --runner
+      - pooling
+      - --trust-remote-code
