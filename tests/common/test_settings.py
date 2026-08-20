@@ -47,3 +47,8 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.debounce_seconds == 1.5
     assert settings.log_level == "DEBUG"
     assert settings.admin_email is None
+    assert settings.inference_backend == "ollama"
+    assert settings.llm_base_url is None
+    assert settings.llm_model is None
+    assert settings.embedding_base_url is None
+    assert settings.vlm_base_url is None

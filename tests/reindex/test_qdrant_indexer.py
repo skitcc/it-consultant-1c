@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from common.embeddings import OllamaEmbedder
+from common.embeddings import OllamaEmbedder, OpenAIEmbedder
 from reindex.adapters.qdrant_indexer import QdrantIndexer, file_content_hash
 from reindex.domain.models import DocumentChunk
 
@@ -397,6 +397,49 @@ def test_ollama_embedder_batches_documents(monkeypatch) -> None:
     assert captured["json"]["input"] == ["one", "two"]
     assert captured["json"]["keep_alive"] == -1
     assert captured["json"]["options"] == {"num_ctx": 2048}
+
+
+def test_openai_embedder_posts_v1_embeddings(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"index": 1, "embedding": [0.3, 0.4]},
+                    {"index": 0, "embedding": [0.1, 0.2]},
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, json: dict):
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr("common.embeddings.httpx.Client", FakeClient)
+    embedder = OpenAIEmbedder(
+        base_url="http://vllm:8004",
+        model="nomic-ai/nomic-embed-text-v1.5",
+    )
+    vectors = embedder.embed_documents(["one", "two"])
+    assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+    assert captured["url"] == "http://vllm:8004/v1/embeddings"
+    assert captured["json"]["model"] == "nomic-ai/nomic-embed-text-v1.5"
+    assert captured["json"]["input"] == ["one", "two"]
+    assert "keep_alive" not in captured["json"]
 
 
 def test_apply_changes_upserts_one_file_without_recreating_collection(tmp_path: Path) -> None:

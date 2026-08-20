@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
-from common.embeddings import OllamaEmbedder
+from common.embeddings import Embedder
 from common.timing import span
 from mail_gateway.domain.models import DocumentChunk
 from mail_gateway.ports import DocumentRetriever
@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 class QdrantRetriever(DocumentRetriever):
-    """Embed the query with Ollama and search the Qdrant collection."""
+    """Embed the query and search the Qdrant collection."""
 
     def __init__(
         self,
         *,
         qdrant_url: str,
         collection: str,
-        embedder: OllamaEmbedder,
+        embedder: Embedder,
         limit: int = 20,
         score_threshold: float | None = None,
     ) -> None:

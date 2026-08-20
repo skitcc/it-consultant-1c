@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 
 from common import Settings
-from common.embeddings import OllamaEmbedder
+from common.inference import build_embedder, vlm_base_url
 from common.logging_config import configure_logging
 from reindex.adapters.document_readers import (
     PictureDescriptionConfig,
@@ -32,27 +32,26 @@ def build_indexer(settings: Settings) -> Indexer:
             sorted(unknown),
         )
     logger.info("Index extensions enabled: %s", sorted(allowed))
+    api_url = settings.ollama_base_url
     if settings.picture_description_enabled:
         logger.info(
-            "Picture description enabled model=%s ollama=%s concurrency=%s "
+            "Picture description enabled backend=%s model=%s url=%s concurrency=%s "
             "timeout=%ss threshold=%.3f chunk_size=%s",
+            settings.inference_backend,
             settings.vlm_model,
-            settings.ollama_base_url,
+            vlm_base_url(settings),
             settings.vlm_concurrency,
             settings.vlm_timeout_sec,
             settings.picture_area_threshold,
             settings.chunk_size,
         )
-    embedder = OllamaEmbedder(
-        base_url=settings.ollama_base_url,
-        model=settings.embedding_model,
-        timeout_sec=settings.embedding_timeout_sec,
-    )
+        api_url = vlm_base_url(settings)
+    embedder = build_embedder(settings)
     reader = build_default_document_reader(
         max_tokens=settings.chunk_size,
         picture=PictureDescriptionConfig(
             enabled=settings.picture_description_enabled,
-            ollama_base_url=settings.ollama_base_url,
+            ollama_base_url=api_url,
             model=settings.vlm_model,
             timeout_sec=settings.vlm_timeout_sec,
             concurrency=settings.vlm_concurrency,

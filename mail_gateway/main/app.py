@@ -6,9 +6,16 @@ import logging
 import time
 
 from common import Settings
-from common.embeddings import OllamaEmbedder
+from common.inference import (
+    build_embedder,
+    is_vllm,
+    llm_base_url,
+    rerank_base_url,
+    resolved_llm_model,
+)
 from common.logging_config import configure_logging
 from mail_gateway.adapters.assistant.ollama_assistant import OllamaAssistant
+from mail_gateway.adapters.assistant.openai_assistant import OpenAIAssistant
 from mail_gateway.adapters.ews.account import build_account
 from mail_gateway.adapters.ews.conversation_history import EwsConversationHistoryLoader
 from mail_gateway.adapters.ews.listener import EwsMailListener
@@ -19,8 +26,9 @@ from mail_gateway.adapters.rag.ollama_reranker import (
 )
 from mail_gateway.adapters.rag.qdrant_retriever import QdrantRetriever
 from mail_gateway.adapters.rag.reranking_retriever import RerankingRetriever
+from mail_gateway.adapters.rag.vllm_reranker import VllmReranker
 from mail_gateway.application.handle_incoming_mail import HandleIncomingMail
-from mail_gateway.ports import DocumentRetriever, Reranker
+from mail_gateway.ports import Assistant, DocumentRetriever, Reranker
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +49,19 @@ def build_reranker(settings: Settings) -> Reranker:
     if not settings.rerank_enabled:
         logger.info("RERANK_ENABLED=false — using vector-score order")
         return ScorePassthroughReranker()
-    base_url = settings.rerank_base_url or settings.ollama_base_url
+    base_url = rerank_base_url(settings)
     logger.info(
-        "Reranker enabled base_url=%s model=%s",
+        "Reranker enabled backend=%s base_url=%s model=%s",
+        settings.inference_backend,
         base_url,
         settings.rerank_model,
     )
+    if is_vllm(settings):
+        return VllmReranker(
+            base_url=base_url,
+            model=settings.rerank_model,
+            timeout_sec=settings.rerank_timeout_sec,
+        )
     return OllamaReranker(
         base_url=base_url,
         model=settings.rerank_model,
@@ -55,12 +70,30 @@ def build_reranker(settings: Settings) -> Reranker:
     )
 
 
+def build_assistant(settings: Settings) -> Assistant:
+    model = resolved_llm_model(settings)
+    base_url = llm_base_url(settings)
+    kwargs = {
+        "base_url": base_url,
+        "model": model,
+        "timeout_sec": settings.ollama_timeout_sec,
+        "temperature": settings.ollama_temperature,
+        "top_p": settings.ollama_top_p,
+        "max_tokens": settings.ollama_max_tokens,
+        "context_length": settings.ollama_context_length,
+        "seed": settings.ollama_seed,
+        "draft_reasoning_effort": settings.ollama_draft_reasoning_effort,
+        "verifier_enabled": settings.ollama_verifier_enabled,
+        "verifier_reasoning_effort": settings.ollama_verifier_reasoning_effort,
+        "system_prompt": settings.ai_system_prompt,
+    }
+    if is_vllm(settings):
+        return OpenAIAssistant(**kwargs)
+    return OllamaAssistant(**kwargs)
+
+
 def build_document_retriever(settings: Settings) -> DocumentRetriever:
-    embedder = OllamaEmbedder(
-        base_url=settings.ollama_base_url,
-        model=settings.embedding_model,
-        timeout_sec=settings.embedding_timeout_sec,
-    )
+    embedder = build_embedder(settings)
     base = QdrantRetriever(
         qdrant_url=settings.qdrant_url,
         collection=settings.qdrant_collection,
@@ -111,20 +144,7 @@ def run(settings: Settings | None = None) -> None:
         bot_email=settings.ews_email,
     )
     retriever = build_document_retriever(settings)
-    assistant = OllamaAssistant(
-        base_url=settings.ollama_base_url,
-        model=settings.ollama_model,
-        timeout_sec=settings.ollama_timeout_sec,
-        temperature=settings.ollama_temperature,
-        top_p=settings.ollama_top_p,
-        max_tokens=settings.ollama_max_tokens,
-        context_length=settings.ollama_context_length,
-        seed=settings.ollama_seed,
-        draft_reasoning_effort=settings.ollama_draft_reasoning_effort,
-        verifier_enabled=settings.ollama_verifier_enabled,
-        verifier_reasoning_effort=settings.ollama_verifier_reasoning_effort,
-        system_prompt=settings.ai_system_prompt,
-    )
+    assistant = build_assistant(settings)
     handle = HandleIncomingMail(
         assistant=assistant,
         mail_sender=sender,
@@ -135,12 +155,13 @@ def run(settings: Settings | None = None) -> None:
     )
 
     logger.info(
-        "Mail gateway started mailbox=%s ollama=%s model=%s qdrant=%s "
+        "Mail gateway started mailbox=%s backend=%s llm=%s model=%s qdrant=%s "
         "collection=%s rag_candidates=%s rag_top_k=%s rerank=%s verifier=%s "
         "admin=%s",
         settings.ews_email,
-        settings.ollama_base_url,
-        settings.ollama_model,
+        settings.inference_backend,
+        llm_base_url(settings),
+        resolved_llm_model(settings),
         settings.qdrant_url,
         settings.qdrant_collection,
         settings.rag_candidates,

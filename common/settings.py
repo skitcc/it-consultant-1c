@@ -34,11 +34,17 @@ class Settings(BaseSettings):
     ews_catchup_minutes: int = Field(default=30, alias="EWS_CATCHUP_MINUTES")
 
     ai_system_prompt: str | None = Field(default=None, alias="AI_SYSTEM_PROMPT")
+    inference_backend: Literal["ollama", "vllm"] = Field(
+        default="ollama",
+        alias="INFERENCE_BACKEND",
+    )
     ollama_base_url: str = Field(
         default="http://127.0.0.1:11434",
         alias="OLLAMA_BASE_URL",
     )
     ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
+    llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
+    llm_model: str | None = Field(default=None, alias="LLM_MODEL")
     ollama_timeout_sec: float = Field(default=420.0, alias="OLLAMA_TIMEOUT_SEC")
     ollama_temperature: float = Field(default=0.0, alias="OLLAMA_TEMPERATURE")
     ollama_top_p: float = Field(default=0.1, ge=0.0, le=1.0, alias="OLLAMA_TOP_P")
@@ -67,6 +73,7 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(default="http://127.0.0.1:6333", alias="QDRANT_URL")
     qdrant_collection: str = Field(default="docs", alias="QDRANT_COLLECTION")
     embedding_model: str = Field(default="nomic-embed-text", alias="EMBEDDING_MODEL")
+    embedding_base_url: str | None = Field(default=None, alias="EMBEDDING_BASE_URL")
     embedding_timeout_sec: float = Field(
         default=120.0,
         alias="EMBEDDING_TIMEOUT_SEC",
@@ -98,6 +105,7 @@ class Settings(BaseSettings):
         default=True,
         alias="PICTURE_DESCRIPTION_ENABLED",
     )
+    vlm_base_url: str | None = Field(default=None, alias="VLM_BASE_URL")
     vlm_model: str = Field(default="qwen3-vl:8b", alias="VLM_MODEL")
     vlm_timeout_sec: float = Field(default=90.0, alias="VLM_TIMEOUT_SEC")
     vlm_concurrency: int = Field(default=2, alias="VLM_CONCURRENCY")
@@ -127,4 +135,26 @@ class Settings(BaseSettings):
             return None
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator(
+        "llm_base_url",
+        "llm_model",
+        "embedding_base_url",
+        "vlm_base_url",
+        mode="before",
+    )
+    @classmethod
+    def empty_optional_as_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("inference_backend", mode="before")
+    @classmethod
+    def normalize_inference_backend(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
         return value
