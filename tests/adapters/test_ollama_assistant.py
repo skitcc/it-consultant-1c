@@ -128,6 +128,9 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
         assert item["json"]["top_p"] == 0.1
         assert item["json"]["max_tokens"] == 4096
         assert item["json"]["seed"] == 0
+        assert item["json"]["keep_alive"] == -1
+        assert item["json"]["stop"] == ["\nПользователь:", "\nUser:"]
+        assert item["json"]["options"] == {"num_ctx": 8192}
         assert "response_format" not in item["json"]
         assert rag in item["json"]["messages"][0]["content"]
     assert "Черновик" in chats[1]["json"]["messages"][1]["content"]

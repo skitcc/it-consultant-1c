@@ -25,6 +25,7 @@ _INTERNAL_REASONING_PREFIX = re.compile(
     r"^\s*(?:<[^>]+>\s*)*(?:thinking|analysis|reasoning|content)\b",
     re.IGNORECASE,
 )
+_STOP_SEQUENCES = ("\nПользователь:", "\nUser:")
 
 
 class OllamaAssistant(Assistant):
@@ -143,6 +144,11 @@ class OllamaAssistant(Assistant):
             "top_p": self._top_p,
             "seed": self._seed,
             "max_tokens": self._max_tokens,
+            "keep_alive": -1,
+            "stop": list(_STOP_SEQUENCES),
+            "options": {
+                "num_ctx": self._context_length,
+            },
         }
         started_at = time.perf_counter()
         history_chars = sum(

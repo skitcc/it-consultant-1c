@@ -8,6 +8,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+_KEEP_ALIVE = -1
+_NUM_CTX = 2048
+
 
 class OllamaEmbedder:
     """Calls Ollama ``/api/embed`` and returns a dense vector."""
@@ -48,7 +51,12 @@ class OllamaEmbedder:
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(
                 url,
-                json={"model": self._model, "input": cleaned},
+                json={
+                    "model": self._model,
+                    "input": cleaned,
+                    "keep_alive": _KEEP_ALIVE,
+                    "options": {"num_ctx": _NUM_CTX},
+                },
             )
             response.raise_for_status()
             data = response.json()

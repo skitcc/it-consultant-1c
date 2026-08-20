@@ -111,7 +111,9 @@ def test_ollama_reranker_scores_via_chat_yes_no(monkeypatch) -> None:
     assert "<Query>: printer\n" in user
     assert "<Document>:" in user
     assert first["options"]["temperature"] == 0.0
+    assert first["options"]["num_ctx"] == 2048
     assert first["options"]["num_predict"] == 256
+    assert first["keep_alive"] == -1
     assert first["format"] == {
         "type": "number",
         "minimum": 0.0,
@@ -166,8 +168,12 @@ def test_ollama_reranker_retries_without_thinking_when_score_missing(
     assert [chunk.score for chunk in ranked] == [0.9, 0.2]
     assert len(seen) == 4
     assert seen[0]["options"]["num_predict"] == 200
+    assert seen[0]["options"]["num_ctx"] == 2048
+    assert seen[0]["keep_alive"] == -1
     assert "think" not in seen[0]
     assert seen[1]["options"]["num_predict"] == 16
+    assert seen[1]["options"]["num_ctx"] == 2048
+    assert seen[1]["keep_alive"] == -1
     assert seen[1]["think"] is False
 
 

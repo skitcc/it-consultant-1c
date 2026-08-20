@@ -336,6 +336,8 @@ def test_ollama_embedder_posts_prompt(monkeypatch) -> None:
     assert captured["url"] == "http://ollama:11434/api/embed"
     assert captured["json"]["model"] == "nomic-embed-text"
     assert captured["json"]["input"] == ["hello docs"]
+    assert captured["json"]["keep_alive"] == -1
+    assert captured["json"]["options"] == {"num_ctx": 2048}
 
 
 def test_ollama_embedder_accepts_legacy_embedding_field(monkeypatch) -> None:
@@ -393,6 +395,8 @@ def test_ollama_embedder_batches_documents(monkeypatch) -> None:
     vectors = embedder.embed_documents(["one", "two"])
     assert vectors == [[0.1, 0.2], [0.3, 0.4]]
     assert captured["json"]["input"] == ["one", "two"]
+    assert captured["json"]["keep_alive"] == -1
+    assert captured["json"]["options"] == {"num_ctx": 2048}
 
 
 def test_apply_changes_upserts_one_file_without_recreating_collection(tmp_path: Path) -> None:

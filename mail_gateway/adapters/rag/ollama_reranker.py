@@ -257,8 +257,10 @@ class OllamaReranker:
             "logprobs": True,
             "top_logprobs": 8,
             "format": _SCORE_FORMAT,
+            "keep_alive": -1,
             "options": {
                 "temperature": 0.0,
+                "num_ctx": 2048,
                 "num_predict": 16 if disable_thinking else self._num_predict,
             },
         }
