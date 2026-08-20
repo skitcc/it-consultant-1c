@@ -117,7 +117,7 @@ tests/
 2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
 3. Загрузка треда, очистка тел.
 4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (соседи в том же разделе по `headings`) → фрагменты в `system_prompt`.
-5. Два вызова Ollama `/api/chat` одной моделью (`temperature=0`, `top_p=0.1`, thinking): черновик, затем проверка по тем же чанкам.
+5. Два non-stream вызова Ollama `/v1/chat/completions` одной моделью: черновик с `reasoning_effort=medium`, затем проверка по тем же чанкам с `reasoning_effort=high`.
 6. HTML-reply через EWS (таблицы, без Markdown и ссылок) + список использованных документов в конце.
 7. При обрыве streaming — reconnect.
 
@@ -165,10 +165,15 @@ Instruct/Query/Document → числовой score `0.00..1.00`), дополня
 на исходные vector scores.
 
 Ответ пользователю строится в два слоя одной `OLLAMA_MODEL`: сначала черновик,
-затем проверка по тем же чанкам. В thinking модель сначала выписывает цитаты,
-потом пишет HTML без Markdown, URL и сносок `[1]`. Код добавляет в конец письма
-имена документов. Параметры генерации: `OLLAMA_TEMPERATURE` (по умолчанию `0`)
-и `OLLAMA_TOP_P` (по умолчанию `0.1`).
+затем проверка по тем же чанкам. В скрытом reasoning модель сначала дословно
+извлекает цитаты, затем возвращает JSON с `evidence` и `answer_html`. Код
+проверяет наличие каждой цитаты в RAG, отправляет только HTML без reasoning,
+Markdown, URL и сносок `[1]`, а в конец добавляет имена документов.
+
+Параметры генерации: `OLLAMA_TEMPERATURE=0`, `OLLAMA_TOP_P=0.1`,
+`OLLAMA_MAX_TOKENS=4096`, `OLLAMA_SEED=0`,
+`OLLAMA_DRAFT_REASONING_EFFORT=medium`,
+`OLLAMA_VERIFIER_REASONING_EFFORT=high`, `OLLAMA_TIMEOUT_SEC=420`.
 
 ```json
 {
@@ -182,8 +187,9 @@ Instruct/Query/Document → числовой score `0.00..1.00`), дополня
 }
 ```
 
-В Ollama уходит `POST /api/chat` с `messages`: `system` + история `user`/`assistant`
-(`body` → `content`), `think: true` и `options.temperature` / `options.top_p`.
+В Ollama уходит `POST /v1/chat/completions` с `stream=false`, `messages`:
+`system` + история `user`/`assistant` (`body` → `content`), фиксированным seed,
+`reasoning_effort` и строгой JSON Schema в `response_format`.
 Дополнительные инструкции можно задать через `AI_SYSTEM_PROMPT` (контракт формата
 ответа всё равно добавляется). Модель с Qdrant напрямую не общается — retrieval
 делает `mail_gateway`.
