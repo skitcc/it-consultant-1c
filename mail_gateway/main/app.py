@@ -131,11 +131,13 @@ def run(settings: Settings | None = None) -> None:
         history_loader=history_loader,
         document_retriever=retriever,
         bot_email=settings.ews_email,
+        admin_email=settings.admin_email,
     )
 
     logger.info(
         "Mail gateway started mailbox=%s ollama=%s model=%s qdrant=%s "
-        "collection=%s rag_candidates=%s rag_top_k=%s rerank=%s verifier=%s",
+        "collection=%s rag_candidates=%s rag_top_k=%s rerank=%s verifier=%s "
+        "admin=%s",
         settings.ews_email,
         settings.ollama_base_url,
         settings.ollama_model,
@@ -145,6 +147,7 @@ def run(settings: Settings | None = None) -> None:
         settings.rag_top_k,
         settings.rerank_enabled,
         settings.ollama_verifier_enabled,
+        settings.admin_email or "-",
     )
 
     while True:

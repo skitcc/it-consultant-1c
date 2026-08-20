@@ -21,6 +21,10 @@ class MailSender(Protocol):
         """Send a reply into the same conversation."""
         ...
 
+    def send_mail(self, *, to: str, subject: str, body: str) -> None:
+        """Send a standalone message, used for admin alerts."""
+        ...
+
 
 @runtime_checkable
 class ConversationHistoryLoader(Protocol):

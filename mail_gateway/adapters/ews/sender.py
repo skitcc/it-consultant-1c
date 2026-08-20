@@ -62,3 +62,19 @@ class EwsMailSender(MailSender):
             reply.in_reply_to_item_id,
             time.perf_counter() - started_at,
         )
+
+    def send_mail(self, *, to: str, subject: str, body: str) -> None:
+        started_at = time.perf_counter()
+        logger.info("Sending admin mail to=%s subject=%s", to, subject)
+        item = Message(
+            account=self._account,
+            subject=subject,
+            body=body,
+            to_recipients=[to],
+        )
+        item.send()
+        logger.info(
+            "Admin mail sent to=%s elapsed=%.3fs",
+            to,
+            time.perf_counter() - started_at,
+        )

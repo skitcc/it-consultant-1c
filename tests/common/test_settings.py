@@ -46,3 +46,4 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.watch_path == "/var/db"
     assert settings.debounce_seconds == 1.5
     assert settings.log_level == "DEBUG"
+    assert settings.admin_email is None

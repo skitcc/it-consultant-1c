@@ -1,9 +1,12 @@
+import logging
+
 from mail_gateway.application.handle_incoming_mail import (
     ADMIN_FALLBACK_TEXT,
     INSUFFICIENT_DOCS_TEXT,
     TECHNICAL_FAILURE_TEXT,
     UNVERIFIED_DRAFT_TEXT,
     HandleIncomingMail,
+    pending_user_requests_before,
 )
 from mail_gateway.application.render_answer import NO_SOURCES_TEXT, SOURCES_HEADING
 from mail_gateway.domain.models import ConversationTurn, DocumentChunk, IncomingMessage, Reply
@@ -22,9 +25,19 @@ class FakeAssistant:
 class FakeSender:
     def __init__(self) -> None:
         self.sent: list[Reply] = []
+        self.mails: list[dict[str, str]] = []
+        self.fail_reply = False
+        self.fail_mail = False
 
     def send_reply(self, reply: Reply) -> None:
+        if self.fail_reply:
+            raise RuntimeError("ews send failed")
         self.sent.append(reply)
+
+    def send_mail(self, *, to: str, subject: str, body: str) -> None:
+        if self.fail_mail:
+            raise RuntimeError("admin mail failed")
+        self.mails.append({"to": to, "subject": subject, "body": body})
 
 
 class FakeHistoryLoader:
@@ -64,6 +77,26 @@ def test_sends_assistant_reply() -> None:
     assert NO_SOURCES_TEXT in sender.sent[0].body
     assert len(assistant.calls[0].messages) == 1
     assert assistant.calls[0].messages[0].body == "Please help"
+
+
+def test_logs_timing_summary_for_each_request(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    handle = HandleIncomingMail(
+        assistant=FakeAssistant("Answer from AI"),
+        mail_sender=FakeSender(),
+    )
+
+    handle(_message())
+
+    assert "Timing step=history" in caplog.text
+    assert "Timing step=rag" in caplog.text
+    assert "Timing step=ews_reply" in caplog.text
+    assert "Timing summary conversation_id=conv-1 item_id=item-1" in caplog.text
+    assert "history=" in caplog.text
+    assert "rag=" in caplog.text
+    assert "ews_reply=" in caplog.text
+    assert "total=" in caplog.text
+    assert "admin_notify" not in caplog.text
 
 
 def test_uses_admin_fallback_when_no_reply() -> None:
@@ -272,3 +305,146 @@ def test_ignores_own_bot_email_silently() -> None:
 
     assert assistant.calls == []
     assert sender.sent == []
+
+
+def test_pending_user_requests_before_skips_current_and_resets_after_bot() -> None:
+    turns = [
+        ConversationTurn(role="user", body="q1", item_id="u1"),
+        ConversationTurn(role="assistant", body="a1", item_id="b1"),
+        ConversationTurn(role="user", body="q2", item_id="u2"),
+        ConversationTurn(role="user", body="q3", item_id="u3"),
+        ConversationTurn(role="user", body="q4", item_id="item-1"),
+    ]
+    assert pending_user_requests_before(turns, "item-1") == 2
+    assert pending_user_requests_before(turns[:2] + [turns[-1]], "item-1") == 0
+
+
+def test_successful_reply_does_not_mail_admin() -> None:
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=FakeAssistant("Answer from AI"),
+        mail_sender=sender,
+        admin_email="admin@company.ru",
+    )
+
+    handle(_message())
+
+    assert sender.sent
+    assert sender.mails == []
+
+
+def test_assistant_timeout_mails_admin_and_still_replies_to_user() -> None:
+    class FailingAssistant:
+        def ask(self, message: IncomingMessage) -> str | None:
+            del message
+            raise RuntimeError("ollama timeout")
+
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=FailingAssistant(),
+        mail_sender=sender,
+        document_retriever=FakeRetriever(
+            [DocumentChunk(text="fact", source_path="guide.pdf", chunk_index=0)]
+        ),
+        admin_email="admin@company.ru",
+    )
+
+    handle(_message())
+
+    assert TECHNICAL_FAILURE_TEXT in sender.sent[0].body
+    assert len(sender.mails) == 1
+    mail = sender.mails[0]
+    assert mail["to"] == "admin@company.ru"
+    assert mail["subject"] == "IT-консультант: ошибка обработки запроса"
+    assert "RuntimeError: ollama timeout" in mail["body"]
+    assert "ответ пользователю: отправлен" in mail["body"]
+    assert "запросов пользователя перед этим: 0" in mail["body"]
+    assert "Please help" in mail["body"]
+
+
+def test_undelivered_reply_mails_admin() -> None:
+    sender = FakeSender()
+    sender.fail_reply = True
+    handle = HandleIncomingMail(
+        assistant=FakeAssistant("Answer from AI"),
+        mail_sender=sender,
+        admin_email="admin@company.ru",
+    )
+
+    handle(_message())
+
+    assert sender.sent == []
+    assert len(sender.mails) == 1
+    assert sender.mails[0]["subject"] == "IT-консультант: ответ не отправлен пользователю"
+    assert "ответ пользователю: не отправлен" in sender.mails[0]["body"]
+    assert "ews send failed" in sender.mails[0]["body"]
+
+
+def test_pending_user_requests_mail_admin_with_count() -> None:
+    history = [
+        ConversationTurn(
+            role="user",
+            body="first question",
+            from_address="user@company.ru",
+            item_id="item-0",
+        ),
+        ConversationTurn(
+            role="user",
+            body="second question",
+            from_address="user@company.ru",
+            item_id="item-mid",
+        ),
+    ]
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=FakeAssistant("follow-up answer"),
+        mail_sender=sender,
+        history_loader=FakeHistoryLoader(history),
+        admin_email="admin@company.ru",
+    )
+
+    handle(_message())
+
+    assert "follow-up answer" in sender.sent[0].body
+    assert len(sender.mails) == 1
+    assert sender.mails[0]["subject"] == "IT-консультант: 2 запроса пользователя перед этим"
+    assert "запросов пользователя перед этим: 2" in sender.mails[0]["body"]
+    assert "ошибка: нет" in sender.mails[0]["body"]
+
+
+def test_admin_mail_failure_does_not_break_user_reply() -> None:
+    sender = FakeSender()
+    sender.fail_mail = True
+    handle = HandleIncomingMail(
+        assistant=FakeAssistant(None),
+        mail_sender=sender,
+        admin_email="admin@company.ru",
+    )
+
+    handle(_message())
+
+    assert ADMIN_FALLBACK_TEXT in sender.sent[0].body
+    assert sender.mails == []
+
+
+def test_without_admin_email_errors_are_only_logged(caplog) -> None:
+    class FailingAssistant:
+        def ask(self, message: IncomingMessage) -> str | None:
+            del message
+            raise RuntimeError("ollama timeout")
+
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=FailingAssistant(),
+        mail_sender=sender,
+        document_retriever=FakeRetriever(
+            [DocumentChunk(text="fact", source_path="guide.pdf", chunk_index=0)]
+        ),
+    )
+
+    handle(_message())
+
+    assert TECHNICAL_FAILURE_TEXT in sender.sent[0].body
+    assert sender.mails == []
+    assert "ADMIN_EMAIL is not set" in caplog.text
+    assert "Admin alert" in caplog.text

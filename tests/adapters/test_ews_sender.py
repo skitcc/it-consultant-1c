@@ -51,3 +51,25 @@ def test_ews_sender_uses_html_body() -> None:
     assert sent["subject"] == "Re: Question"
     assert isinstance(sent["create_body"], HTMLBody)
     assert "<p>hi</p>" in str(sent["create_body"])
+
+
+def test_ews_sender_send_mail(monkeypatch) -> None:
+    sent: dict = {}
+
+    class FakeMessage:
+        def __init__(self, **kwargs) -> None:
+            sent["kwargs"] = kwargs
+
+        def send(self) -> None:
+            sent["sent"] = True
+
+    monkeypatch.setattr("mail_gateway.adapters.ews.sender.Message", FakeMessage)
+    account = SimpleNamespace()
+    sender = EwsMailSender(account)  # type: ignore[arg-type]
+    sender.send_mail(to="admin@company.ru", subject="alert", body="details")
+
+    assert sent["sent"] is True
+    assert sent["kwargs"]["account"] is account
+    assert sent["kwargs"]["to_recipients"] == ["admin@company.ru"]
+    assert sent["kwargs"]["subject"] == "alert"
+    assert sent["kwargs"]["body"] == "details"

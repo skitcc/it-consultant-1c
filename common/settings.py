@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     ] = Field(default="high", alias="OLLAMA_VERIFIER_REASONING_EFFORT")
 
     reconnect_delay_sec: float = Field(default=5.0, alias="RECONNECT_DELAY_SEC")
+    admin_email: str | None = Field(default=None, alias="ADMIN_EMAIL")
 
     # --- RAG / Qdrant (shared by mail_gateway and reindex) ---
     qdrant_url: str = Field(default="http://127.0.0.1:6333", alias="QDRANT_URL")
@@ -119,7 +120,7 @@ class Settings(BaseSettings):
     # --- shared ---
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
-    @field_validator("ews_username", mode="before")
+    @field_validator("ews_username", "admin_email", mode="before")
     @classmethod
     def empty_username_as_none(cls, value: object) -> object:
         if value is None:
