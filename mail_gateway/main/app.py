@@ -117,6 +117,10 @@ def run(settings: Settings | None = None) -> None:
         timeout_sec=settings.ollama_timeout_sec,
         temperature=settings.ollama_temperature,
         top_p=settings.ollama_top_p,
+        max_tokens=settings.ollama_max_tokens,
+        seed=settings.ollama_seed,
+        draft_reasoning_effort=settings.ollama_draft_reasoning_effort,
+        verifier_reasoning_effort=settings.ollama_verifier_reasoning_effort,
         system_prompt=settings.ai_system_prompt,
     )
     handle = HandleIncomingMail(

@@ -36,6 +36,11 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.rerank_num_predict == 256
     assert settings.ollama_temperature == 0.0
     assert settings.ollama_top_p == 0.1
+    assert settings.ollama_timeout_sec == 420.0
+    assert settings.ollama_max_tokens == 4096
+    assert settings.ollama_seed == 0
+    assert settings.ollama_draft_reasoning_effort == "medium"
+    assert settings.ollama_verifier_reasoning_effort == "high"
     assert settings.watch_path == "/var/db"
     assert settings.debounce_seconds == 1.5
     assert settings.log_level == "DEBUG"

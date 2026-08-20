@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -37,9 +39,17 @@ class Settings(BaseSettings):
         alias="OLLAMA_BASE_URL",
     )
     ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
-    ollama_timeout_sec: float = Field(default=300.0, alias="OLLAMA_TIMEOUT_SEC")
+    ollama_timeout_sec: float = Field(default=420.0, alias="OLLAMA_TIMEOUT_SEC")
     ollama_temperature: float = Field(default=0.0, alias="OLLAMA_TEMPERATURE")
     ollama_top_p: float = Field(default=0.1, ge=0.0, le=1.0, alias="OLLAMA_TOP_P")
+    ollama_max_tokens: int = Field(default=4096, ge=1, alias="OLLAMA_MAX_TOKENS")
+    ollama_seed: int = Field(default=0, alias="OLLAMA_SEED")
+    ollama_draft_reasoning_effort: Literal["low", "medium", "high", "max", "none"] = (
+        Field(default="medium", alias="OLLAMA_DRAFT_REASONING_EFFORT")
+    )
+    ollama_verifier_reasoning_effort: Literal[
+        "low", "medium", "high", "max", "none"
+    ] = Field(default="high", alias="OLLAMA_VERIFIER_REASONING_EFFORT")
 
     reconnect_delay_sec: float = Field(default=5.0, alias="RECONNECT_DELAY_SEC")
 

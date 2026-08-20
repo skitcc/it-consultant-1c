@@ -101,21 +101,54 @@ def test_rag_context_appended_to_system_prompt() -> None:
 
 def test_default_system_prompt_requires_grounded_formal_answers() -> None:
     assert "Не выдумывай" in DEFAULT_SYSTEM_PROMPT
-    assert "thinking" in DEFAULT_SYSTEM_PROMPT
+    assert "reasoning" in DEFAULT_SYSTEM_PROMPT
+    assert "дословной непрерывной цитатой" in DEFAULT_SYSTEM_PROMPT
     assert "без Markdown" in DEFAULT_SYSTEM_PROMPT
-    assert "K0 и K1" in DEFAULT_SYSTEM_PROMPT
+    assert "K0" not in DEFAULT_SYSTEM_PROMPT
+    assert "K1" not in DEFAULT_SYSTEM_PROMPT
     assert OUTPUT_CONTRACT in DEFAULT_SYSTEM_PROMPT
 
 
 def test_verifier_payload_includes_draft_and_same_chunks() -> None:
     payload = build_verifier_payload(
         conversation_id="c1",
-        draft="<p>K0-2: PM готов покупать по K1</p>",
-        rag_context="Документ: grades.pdf\nK0-2: PM готов покупать по K0.",
+        draft="<p>Черновик с изменённым условием</p>",
+        rag_context="Документ: rules.pdf\nТочное условие из документа.",
     )
     assert payload["conversation_id"] == "c1"
     assert payload["system_prompt"].startswith(VERIFIER_SYSTEM_PROMPT[:40])
-    assert "покупать по K0" in payload["system_prompt"]
+    assert "Точное условие из документа" in payload["system_prompt"]
     assert payload["messages"][0]["role"] == "user"
-    assert "покупать по K1" in payload["messages"][0]["body"]
-    assert "нельзя писать K1" in VERIFIER_SYSTEM_PROMPT
+    assert "изменённым условием" in payload["messages"][0]["body"]
+    assert "дословные непрерывные цитаты" in VERIFIER_SYSTEM_PROMPT
+    assert "K0" not in VERIFIER_SYSTEM_PROMPT
+    assert "K1" not in VERIFIER_SYSTEM_PROMPT
+
+
+def test_payload_removes_only_consecutive_duplicate_turns() -> None:
+    message = IncomingMessage(
+        conversation_id="c",
+        item_id="i",
+        change_key="k",
+        from_address="u@x.ru",
+        subject="s",
+        body="Повтор",
+    )
+    duplicate = ConversationTurn(role="user", body="Повтор")
+    message = with_messages(
+        message,
+        [
+            duplicate,
+            duplicate,
+            ConversationTurn(role="assistant", body="Ответ"),
+            duplicate,
+        ],
+    )
+
+    payload = build_assistant_payload(message)
+
+    assert payload["messages"] == [
+        {"role": "user", "body": "Повтор"},
+        {"role": "assistant", "body": "Ответ"},
+        {"role": "user", "body": "Повтор"},
+    ]

@@ -4,6 +4,10 @@ from typing import Protocol, runtime_checkable
 from mail_gateway.domain.models import ConversationTurn, DocumentChunk, IncomingMessage, Reply
 
 
+class AssistantUnavailableError(RuntimeError):
+    """Assistant backend failed before a verified answer could be produced."""
+
+
 @runtime_checkable
 class MailListener(Protocol):
     def listen(self) -> Iterator[IncomingMessage]:

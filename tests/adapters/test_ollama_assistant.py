@@ -1,5 +1,12 @@
+import json
+import logging
+
+import httpx
+import pytest
+
 from mail_gateway.adapters.assistant.ollama_assistant import OllamaAssistant
 from mail_gateway.domain.models import IncomingMessage, with_rag_context
+from mail_gateway.ports import AssistantUnavailableError
 
 
 def _message(*, rag: str | None = None) -> IncomingMessage:
@@ -16,26 +23,51 @@ def _message(*, rag: str | None = None) -> IncomingMessage:
     return with_rag_context(message, rag)
 
 
-def test_ollama_assistant_sends_temperature_and_two_layers(monkeypatch) -> None:
+def _completion(
+    answer_html: str,
+    *,
+    quotes: list[str],
+    reasoning: str = "internal",
+    finish_reason: str = "stop",
+) -> dict:
+    return {
+        "choices": [
+            {
+                "finish_reason": finish_reason,
+                "message": {
+                    "reasoning": reasoning,
+                    "content": json.dumps(
+                        {
+                            "evidence": [{"quote": quote} for quote in quotes],
+                            "answer_html": answer_html,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+        },
+    }
+
+
+def _install_fake_client(monkeypatch, replies: list[dict]) -> list[dict]:
     seen: list[dict] = []
-    replies = iter(
-        [
-            {"message": {"thinking": "цитата K0", "content": "черновик K1"}},
-            {"message": {"thinking": "цитата K0-2 покупать по K0", "content": "<p>K0</p>"}},
-        ]
-    )
-    rag = "Документ: grades.pdf\nK0-2: PM готов покупать по K0."
+    responses = iter(replies)
 
     class FakeResponse:
         def raise_for_status(self) -> None:
             return None
 
         def json(self) -> dict:
-            return next(replies)
+            return next(responses)
 
     class FakeClient:
         def __init__(self, *args, **kwargs) -> None:
-            pass
+            self.timeout = kwargs.get("timeout")
 
         def __enter__(self):
             return self
@@ -51,75 +83,113 @@ def test_ollama_assistant_sends_temperature_and_two_layers(monkeypatch) -> None:
         "mail_gateway.adapters.assistant.ollama_assistant.httpx.Client",
         FakeClient,
     )
+    return seen
+
+
+def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
+    monkeypatch,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO)
+    rag = "Документ: guide.pdf\nТочный факт из документа."
+    seen = _install_fake_client(
+        monkeypatch,
+        [
+            _completion(
+                "<p>Черновик</p>",
+                quotes=["Точный факт из документа."],
+                reasoning="layer one private reasoning",
+            ),
+            _completion(
+                "<p>Проверенный ответ</p>",
+                quotes=["Точный факт из документа."],
+                reasoning="layer two private reasoning",
+            ),
+        ],
+    )
 
     assistant = OllamaAssistant(
         model="gpt-oss:120b",
         temperature=0.0,
         top_p=0.1,
+        max_tokens=4096,
+        seed=0,
+        draft_reasoning_effort="medium",
+        verifier_reasoning_effort="high",
     )
     answer = assistant.ask(_message(rag=rag))
 
-    assert answer == "<p>K0</p>"
+    assert answer == "<p>Проверенный ответ</p>"
     assert len(seen) == 2
-    assert seen[0]["url"].endswith("/api/chat")
+    assert all(item["url"].endswith("/v1/chat/completions") for item in seen)
+    assert seen[0]["json"]["reasoning_effort"] == "medium"
+    assert seen[1]["json"]["reasoning_effort"] == "high"
     for item in seen:
-        assert item["json"]["think"] is True
-        assert item["json"]["options"]["temperature"] == 0.0
-        assert item["json"]["options"]["top_p"] == 0.1
+        assert item["json"]["stream"] is False
+        assert item["json"]["temperature"] == 0.0
+        assert item["json"]["top_p"] == 0.1
+        assert item["json"]["max_tokens"] == 4096
+        assert item["json"]["seed"] == 0
+        assert item["json"]["response_format"]["type"] == "json_schema"
         assert rag in item["json"]["messages"][0]["content"]
-    assert seen[1]["json"]["messages"][1]["content"].count("черновик K1") == 1
+    assert "Черновик" in seen[1]["json"]["messages"][1]["content"]
+    assert "private reasoning" not in answer
+    assert "prompt_tokens=100" in caplog.text
+    assert "completion_tokens=50" in caplog.text
 
 
 def test_ollama_assistant_skips_verifier_without_rag(monkeypatch) -> None:
-    seen: list[dict] = []
-
-    class FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {"message": {"content": "plain"}}
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def post(self, url: str, json: dict):
-            seen.append(json)
-            return FakeResponse()
-
-    monkeypatch.setattr(
-        "mail_gateway.adapters.assistant.ollama_assistant.httpx.Client",
-        FakeClient,
+    seen = _install_fake_client(
+        monkeypatch,
+        [_completion("<p>plain</p>", quotes=[])],
     )
 
     answer = OllamaAssistant(model="gpt-oss:120b").ask(_message())
-    assert answer == "plain"
+    assert answer == "<p>plain</p>"
     assert len(seen) == 1
 
 
-def test_ollama_assistant_drops_draft_when_verifier_empty(monkeypatch) -> None:
-    replies = iter(
+def test_ollama_assistant_rejects_quote_not_present_in_rag(monkeypatch) -> None:
+    _install_fake_client(
+        monkeypatch,
         [
-            {"message": {"content": "draft"}},
-            {"message": {"content": ""}},
-        ]
+            _completion("<p>draft</p>", quotes=["Подтверждённая строка."]),
+            _completion("<p>wrong</p>", quotes=["Изменённая строка."]),
+        ],
+    )
+    rag = "Документ: a.md\nПодтверждённая строка."
+
+    answer = OllamaAssistant(model="m").ask(_message(rag=rag))
+    assert answer is None
+
+
+def test_ollama_assistant_accepts_quote_with_whitespace_normalization(
+    monkeypatch,
+) -> None:
+    rag = "Документ: a.md\nПервая строка\n  вторая строка."
+    _install_fake_client(
+        monkeypatch,
+        [
+            _completion("<p>draft</p>", quotes=["Первая строка вторая строка."]),
+            _completion("<p>answer</p>", quotes=["Первая строка вторая строка."]),
+        ],
+    )
+    assert OllamaAssistant(model="m").ask(_message(rag=rag)) == "<p>answer</p>"
+
+
+def test_ollama_assistant_rejects_reasoning_leaked_into_answer(monkeypatch) -> None:
+    rag = "Документ: a.md\nФакт."
+    _install_fake_client(
+        monkeypatch,
+        [_completion("thinking - скрытый текст content Ответ", quotes=["Факт."])],
     )
 
-    class FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
+    answer = OllamaAssistant(model="m").ask(_message(rag=rag))
+    assert answer is None
 
-        def json(self) -> dict:
-            return next(replies)
 
-    class FakeClient:
+def test_ollama_assistant_raises_typed_error_on_timeout(monkeypatch) -> None:
+    class TimeoutClient:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
@@ -131,12 +201,22 @@ def test_ollama_assistant_drops_draft_when_verifier_empty(monkeypatch) -> None:
 
         def post(self, url: str, json: dict):
             del url, json
-            return FakeResponse()
+            raise httpx.ReadTimeout("timed out")
 
     monkeypatch.setattr(
         "mail_gateway.adapters.assistant.ollama_assistant.httpx.Client",
-        FakeClient,
+        TimeoutClient,
     )
 
-    answer = OllamaAssistant(model="m").ask(_message(rag="Документ: a.md\nфакт"))
-    assert answer is None
+    with pytest.raises(AssistantUnavailableError):
+        OllamaAssistant(model="m").ask(_message())
+
+
+def test_ollama_assistant_rejects_truncated_completion(monkeypatch) -> None:
+    _install_fake_client(
+        monkeypatch,
+        [_completion("<p>partial</p>", quotes=[], finish_reason="length")],
+    )
+
+    with pytest.raises(AssistantUnavailableError):
+        OllamaAssistant(model="m").ask(_message())
