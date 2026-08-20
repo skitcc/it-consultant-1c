@@ -9,6 +9,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from common.embeddings import OllamaEmbedder
+from common.timing import span
 from mail_gateway.domain.models import DocumentChunk
 from mail_gateway.ports import DocumentRetriever
 
@@ -45,7 +46,8 @@ class QdrantRetriever(DocumentRetriever):
             )
             return []
 
-        vector = self._embedder.embed(cleaned)
+        with span("embed_query"):
+            vector = self._embedder.embed(cleaned)
         kwargs: dict = {
             "collection_name": self._collection,
             "query": vector,
@@ -55,7 +57,8 @@ class QdrantRetriever(DocumentRetriever):
         if self._score_threshold is not None:
             kwargs["score_threshold"] = self._score_threshold
 
-        response = self._client.query_points(**kwargs)
+        with span("qdrant_search"):
+            response = self._client.query_points(**kwargs)
         hits = getattr(response, "points", None) or []
         chunks = [_chunk_from_hit(hit) for hit in hits]
         chunks = [chunk for chunk in chunks if chunk is not None]
@@ -88,6 +91,19 @@ class QdrantRetriever(DocumentRetriever):
                 if index >= 0:
                     indexes.add(index)
 
+        loaded = self._scroll_neighbors(wanted_by_source)
+
+        logger.info(
+            "Qdrant neighbors sources=%s loaded=%s",
+            len(wanted_by_source),
+            len(loaded),
+        )
+        return loaded
+
+    def _scroll_neighbors(
+        self,
+        wanted_by_source: dict[str, set[int]],
+    ) -> list[DocumentChunk]:
         loaded: list[DocumentChunk] = []
         for source_path, indexes in wanted_by_source.items():
             if not indexes:
@@ -114,12 +130,6 @@ class QdrantRetriever(DocumentRetriever):
                 chunk = _chunk_from_payload(getattr(point, "payload", None), score=None)
                 if chunk is not None:
                     loaded.append(chunk)
-
-        logger.info(
-            "Qdrant neighbors sources=%s loaded=%s",
-            len(wanted_by_source),
-            len(loaded),
-        )
         return loaded
 
 

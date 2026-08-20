@@ -12,6 +12,7 @@ from dataclasses import replace
 
 import httpx
 
+from common.timing import record
 from mail_gateway.domain.models import DocumentChunk
 from mail_gateway.ports import Reranker
 
@@ -185,10 +186,15 @@ class OllamaReranker:
                     _format_score(chunk.score),
                     len(chunk.text),
                 )
-                score = self._score_document(client, query, chunk.text)
+                score = None
+                try:
+                    score = self._score_document(client, query, chunk.text)
+                finally:
+                    elapsed = time.perf_counter() - started_at
+                    record(f"rerank_{position}/{len(chunks)}", elapsed)
                 if score is None:
                     scores.append(0.0)
-                    logger.debug(
+                    logger.info(
                         "Rerank candidate done candidate=%s/%s source=%r "
                         "chunk_index=%s parsed=false rerank_score=0.0000 "
                         "elapsed=%.3fs",
@@ -196,12 +202,12 @@ class OllamaReranker:
                         len(chunks),
                         chunk.source_path,
                         chunk.chunk_index,
-                        time.perf_counter() - started_at,
+                        elapsed,
                     )
                     continue
                 parsed += 1
                 scores.append(score)
-                logger.debug(
+                logger.info(
                     "Rerank candidate done candidate=%s/%s source=%r "
                     "chunk_index=%s parsed=true rerank_score=%.4f elapsed=%.3fs",
                     position,
@@ -209,7 +215,7 @@ class OllamaReranker:
                     chunk.source_path,
                     chunk.chunk_index,
                     score,
-                    time.perf_counter() - started_at,
+                    elapsed,
                 )
         if parsed == 0:
             return None

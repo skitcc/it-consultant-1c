@@ -7,6 +7,7 @@ import pytest
 from mail_gateway.adapters.assistant.ollama_assistant import OllamaAssistant
 from mail_gateway.domain.models import IncomingMessage, with_rag_context
 from mail_gateway.ports import AssistantUnavailableError
+from common.timing import begin_request, end_request
 
 
 def _message(*, rag: str | None = None) -> IncomingMessage:
@@ -109,7 +110,11 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
         verifier_enabled=True,
         verifier_reasoning_effort="high",
     )
-    answer = assistant.ask(_message(rag=rag))
+    timer = begin_request(conversation_id="c1")
+    try:
+        answer = assistant.ask(_message(rag=rag))
+    finally:
+        end_request(timer)
 
     assert answer == "<p>Проверенный ответ</p>"
     chats = [item for item in seen if item["url"].endswith("/v1/chat/completions")]
@@ -130,6 +135,7 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
     assert "prompt_tokens=100" in caplog.text
     assert "completion_tokens=50" in caplog.text
     assert "8192" in caplog.text
+    assert [name for name, _elapsed in timer.steps] == ["llm_layer_1", "llm_layer_2"]
 
 
 def test_ollama_assistant_skips_verifier_without_rag(monkeypatch) -> None:

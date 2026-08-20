@@ -9,6 +9,7 @@ import time
 
 import httpx
 
+from common.timing import record
 from mail_gateway.adapters.assistant.payload import (
     build_assistant_payload,
     build_verifier_payload,
@@ -148,109 +149,112 @@ class OllamaAssistant(Assistant):
             len(str(item.get("body") or "")) for item in payload["messages"]
         )
         try:
-            logger.info(
-                "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
-                "system_chars=%s history_chars=%s rag_chars=%s "
-                "max_tokens=%s reasoning_effort=%s temperature=%s top_p=%s seed=%s",
-                layer,
-                self._model,
-                conversation_id,
-                len(payload["messages"]),
-                len(str(payload["system_prompt"])),
-                history_chars,
-                len(rag_context),
-                self._max_tokens,
-                reasoning_effort,
-                self._temperature,
-                self._top_p,
-                self._seed,
-            )
-            with httpx.Client(timeout=self._timeout) as client:
-                response = client.post(
-                    f"{self._base_url}/v1/chat/completions",
-                    json=request_body,
+            try:
+                logger.info(
+                    "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
+                    "system_chars=%s history_chars=%s rag_chars=%s "
+                    "max_tokens=%s reasoning_effort=%s temperature=%s top_p=%s seed=%s",
+                    layer,
+                    self._model,
+                    conversation_id,
+                    len(payload["messages"]),
+                    len(str(payload["system_prompt"])),
+                    history_chars,
+                    len(rag_context),
+                    self._max_tokens,
+                    reasoning_effort,
+                    self._temperature,
+                    self._top_p,
+                    self._seed,
                 )
-                response.raise_for_status()
-                data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.exception(
-                "Ollama request failed layer=%s conversation_id=%s",
-                layer,
-                conversation_id,
-            )
-            raise AssistantUnavailableError(
-                f"Ollama layer {layer} request failed"
-            ) from exc
+                with httpx.Client(timeout=self._timeout) as client:
+                    response = client.post(
+                        f"{self._base_url}/v1/chat/completions",
+                        json=request_body,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.exception(
+                    "Ollama request failed layer=%s conversation_id=%s",
+                    layer,
+                    conversation_id,
+                )
+                raise AssistantUnavailableError(
+                    f"Ollama layer {layer} request failed"
+                ) from exc
 
-        elapsed = time.perf_counter() - started_at
-        choice = _first_choice(data)
-        if choice is None:
-            raise AssistantUnavailableError(
-                f"Ollama layer {layer} returned no completion choice"
-            )
-        finish_reason = str(choice.get("finish_reason") or "")
-        if finish_reason == "length":
-            logger.warning(
-                "Ollama output truncated layer=%s conversation_id=%s",
-                layer,
-                conversation_id,
-            )
-            raise AssistantUnavailableError(f"Ollama layer {layer} output truncated")
-        if finish_reason and finish_reason != "stop":
-            logger.warning(
-                "Ollama unexpected finish_reason layer=%s conversation_id=%s "
-                "finish_reason=%s",
-                layer,
-                conversation_id,
-                finish_reason,
-            )
-            raise AssistantUnavailableError(
-                f"Ollama layer {layer} stopped with {finish_reason}"
-            )
+            elapsed = time.perf_counter() - started_at
+            choice = _first_choice(data)
+            if choice is None:
+                raise AssistantUnavailableError(
+                    f"Ollama layer {layer} returned no completion choice"
+                )
+            finish_reason = str(choice.get("finish_reason") or "")
+            if finish_reason == "length":
+                logger.warning(
+                    "Ollama output truncated layer=%s conversation_id=%s",
+                    layer,
+                    conversation_id,
+                )
+                raise AssistantUnavailableError(f"Ollama layer {layer} output truncated")
+            if finish_reason and finish_reason != "stop":
+                logger.warning(
+                    "Ollama unexpected finish_reason layer=%s conversation_id=%s "
+                    "finish_reason=%s",
+                    layer,
+                    conversation_id,
+                    finish_reason,
+                )
+                raise AssistantUnavailableError(
+                    f"Ollama layer {layer} stopped with {finish_reason}"
+                )
 
-        message = choice.get("message")
-        if not isinstance(message, dict):
-            raise AssistantUnavailableError(
-                f"Ollama layer {layer} returned no message"
-            )
-        reasoning_chars = _reasoning_chars(message)
-        content = message.get("content")
-        usage = data.get("usage") if isinstance(data, dict) else None
-        if not isinstance(usage, dict):
-            usage = {}
-        prompt_tokens = usage.get("prompt_tokens")
-        total_tokens = usage.get("total_tokens")
-        logger.info(
-            "Ollama layer=%s done conversation_id=%s elapsed=%.3fs "
-            "finish_reason=%s prompt_tokens=%s/%s (%s) "
-            "completion_tokens=%s total_tokens=%s/%s (%s) "
-            "reasoning_chars=%s content_chars=%s",
-            layer,
-            conversation_id,
-            elapsed,
-            finish_reason or None,
-            prompt_tokens,
-            self._context_length,
-            _ratio_label(prompt_tokens, self._context_length),
-            usage.get("completion_tokens"),
-            total_tokens,
-            self._context_length,
-            _ratio_label(total_tokens, self._context_length),
-            reasoning_chars,
-            len(str(content or "")),
-        )
-        if not isinstance(content, str) or not content.strip():
-            logger.warning(
-                "Ollama layer=%s returned empty message content conversation_id=%s",
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                raise AssistantUnavailableError(
+                    f"Ollama layer {layer} returned no message"
+                )
+            reasoning_chars = _reasoning_chars(message)
+            content = message.get("content")
+            usage = data.get("usage") if isinstance(data, dict) else None
+            if not isinstance(usage, dict):
+                usage = {}
+            prompt_tokens = usage.get("prompt_tokens")
+            total_tokens = usage.get("total_tokens")
+            logger.info(
+                "Ollama layer=%s done conversation_id=%s elapsed=%.3fs "
+                "finish_reason=%s prompt_tokens=%s/%s (%s) "
+                "completion_tokens=%s total_tokens=%s/%s (%s) "
+                "reasoning_chars=%s content_chars=%s",
                 layer,
                 conversation_id,
+                elapsed,
+                finish_reason or None,
+                prompt_tokens,
+                self._context_length,
+                _ratio_label(prompt_tokens, self._context_length),
+                usage.get("completion_tokens"),
+                total_tokens,
+                self._context_length,
+                _ratio_label(total_tokens, self._context_length),
+                reasoning_chars,
+                len(str(content or "")),
             )
-            return None
-        return _parse_answer_html(
-            content,
-            layer=layer,
-            conversation_id=conversation_id,
-        )
+            if not isinstance(content, str) or not content.strip():
+                logger.warning(
+                    "Ollama layer=%s returned empty message content conversation_id=%s",
+                    layer,
+                    conversation_id,
+                )
+                return None
+            return _parse_answer_html(
+                content,
+                layer=layer,
+                conversation_id=conversation_id,
+            )
+        finally:
+            record(f"llm_layer_{layer}", time.perf_counter() - started_at)
 
 
 def _ratio_label(used: object, total: int) -> str:
