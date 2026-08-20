@@ -398,7 +398,11 @@ def test_docling_reader_renders_full_table_item_once(tmp_path: Path) -> None:
     chunker.chunk.return_value = [first, second]
     chunker.contextualize.side_effect = [
         "| Этап | Условие |\n|------|---------|\n| Intern 1 | адаптация |",
-        "| Этап | Условие |\n|------|---------|\n| K1 | после K0-2 |",
+        (
+            "|\n"
+            "|-----------------------------------------------------------------------|"
+            "-----------------------------------------------------------------------|"
+        ),
     ]
     chunker.serializer_provider = None
 
@@ -408,12 +412,15 @@ def test_docling_reader_renders_full_table_item_once(tmp_path: Path) -> None:
         max_tokens=8,
     ).read(path)
 
-    tables = [chunk for chunk in chunks if chunk.atomic]
-    assert len(tables) == 1
-    assert tables[0].text == full_table
-    assert "Intern 1 | адаптация" in tables[0].text
-    assert "K1 | после K0-2" in tables[0].text
-    assert tables[0].headings == ("Критерии",)
+    assert len(chunks) == 1
+    assert chunks[0].atomic is True
+    assert chunks[0].text == full_table
+    assert "Intern 1 | адаптация" in chunks[0].text
+    assert "K1 | после K0-2" in chunks[0].text
+    assert chunks[0].headings == ("Критерии",)
+    assert chunks[0].chunk_type == "table"
+    assert chunks[0].table_ref == "#/tables/0"
+    chunker.contextualize.assert_not_called()
 
 
 def test_docling_reader_renders_table_from_grid_without_size_limit(
@@ -463,6 +470,136 @@ def test_docling_reader_renders_table_from_grid_without_size_limit(
     assert chunks[0].text.startswith("| Этап | Условие |")
     assert "K0-2" in chunks[0].text
     assert "K1" in chunks[0].text
+    assert len(chunks[0].embedding_parts) >= 2
+    assert all("[Таблица]" in part for part in chunks[0].embedding_parts)
+
+
+def test_docling_reader_preserves_mixed_prose_table_order(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.docx"
+    path.write_bytes(b"PK")
+
+    before = type("TextItem", (), {"self_ref": "#/texts/0"})()
+    after = type("TextItem", (), {"self_ref": "#/texts/1"})()
+    table = type(
+        "TableItem",
+        (),
+        {
+            "self_ref": "#/tables/0",
+            "data": type("Data", (), {"grid": []})(),
+        },
+    )()
+    raw = MagicMock()
+    raw.meta.headings = ["Раздел"]
+    raw.meta.doc_items = [before, table, after]
+
+    rendered = {
+        before.self_ref: "Текст до таблицы",
+        table.self_ref: "| A | B |\n|---|---|\n| 1 | 2 |",
+        after.self_ref: "Текст после таблицы",
+    }
+
+    class Serializer:
+        def serialize(self, *, item):
+            return type("Result", (), {"text": rendered[item.self_ref]})()
+
+    provider = MagicMock()
+    provider.get_serializer.return_value = Serializer()
+    chunker = MagicMock()
+    chunker.chunk.return_value = [raw]
+    chunker.serializer_provider = provider
+    document = type("Document", (), {"tables": [table]})()
+    converter = MagicMock()
+    converter.convert.return_value = type("Result", (), {"document": document})()
+
+    chunks = DoclingDocumentReader(converter=converter, chunker=chunker).read(path)
+
+    assert [chunk.chunk_type for chunk in chunks] == ["prose", "table", "prose"]
+    assert [chunk.text for chunk in chunks] == [
+        "Текст до таблицы",
+        "| A | B |\n|---|---|\n| 1 | 2 |",
+        "Текст после таблицы",
+    ]
+
+
+def test_docling_reader_keeps_same_header_tables_separate(tmp_path: Path) -> None:
+    path = tmp_path / "two-tables.pptx"
+    path.write_bytes(b"PK")
+    markdown = "| A | B |\n|---|---|\n| 1 | 2 |"
+
+    tables = []
+    raws = []
+    for index in range(2):
+        table = MagicMock()
+        table.self_ref = f"#/tables/{index}"
+        table.export_to_markdown.return_value = markdown
+        table.data.grid = []
+        tables.append(table)
+        raw = MagicMock()
+        raw.meta.headings = ["Один раздел"]
+        raw.meta.doc_items = [table]
+        raws.append(raw)
+
+    document = type("Document", (), {"tables": tables})()
+    converter = MagicMock()
+    converter.convert.return_value = type("Result", (), {"document": document})()
+    chunker = MagicMock()
+    chunker.chunk.return_value = raws
+    chunker.serializer_provider = None
+
+    chunks = DoclingDocumentReader(converter=converter, chunker=chunker).read(path)
+
+    assert len(chunks) == 2
+    assert [chunk.table_ref for chunk in chunks] == ["#/tables/0", "#/tables/1"]
+
+
+def test_docling_reader_rejects_structural_table_without_content(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "empty-table.pptx"
+    path.write_bytes(b"PK")
+    table = MagicMock()
+    table.self_ref = "#/tables/0"
+    table.export_to_markdown.return_value = "|\n|------|------|"
+    table.data.grid = []
+    raw = MagicMock()
+    raw.meta.headings = []
+    raw.meta.doc_items = [table]
+    converter = MagicMock()
+    converter.convert.return_value = type(
+        "Result",
+        (),
+        {"document": type("Document", (), {"tables": [table]})()},
+    )()
+    chunker = MagicMock()
+    chunker.chunk.return_value = [raw]
+    chunker.serializer_provider = None
+
+    with pytest.raises(RuntimeError, match="without useful content"):
+        DoclingDocumentReader(converter=converter, chunker=chunker).read(path)
+
+
+def test_docling_reader_drops_separator_only_non_table_chunk(tmp_path: Path) -> None:
+    path = tmp_path / "junk.pptx"
+    path.write_bytes(b"PK")
+    raw = MagicMock()
+    raw.meta.headings = ["Раздел"]
+    raw.meta.doc_items = []
+    converter = MagicMock()
+    converter.convert.return_value = type(
+        "Result",
+        (),
+        {"document": object()},
+    )()
+    chunker = MagicMock()
+    chunker.chunk.return_value = [raw]
+    chunker.contextualize.return_value = (
+        "|\n|-----------------------------------------------------------------------|"
+    )
+    chunker.serializer_provider = None
+
+    chunks = DoclingDocumentReader(converter=converter, chunker=chunker).read(path)
+
+    assert chunks == []
 
 
 def test_vlm_http_logging_records_chat_completions(monkeypatch, caplog) -> None:

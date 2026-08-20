@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -312,7 +313,9 @@ def _build_chunker(max_tokens: int, *, tokenizer: Any | None = None) -> Any:
 
     kwargs: dict[str, Any] = {
         "merge_peers": True,
-        "repeat_table_header": True,
+        # Tables are rendered directly from TableItem below. Asking HybridChunker
+        # to repeat headers only creates table fragments that must be discarded.
+        "repeat_table_header": False,
     }
     tok = tokenizer if tokenizer is not None else _tokenizer_with_max_tokens(max_tokens)
     if tok is not None:
@@ -606,84 +609,195 @@ def _chunk_document(
     tokenizer: Any | None,
     path_name: str,
 ) -> list[DocumentChunk]:
-    """HybridChunker for prose; each Docling TableItem becomes one unbounded MD chunk."""
+    """HybridChunker for prose; one Docling TableItem becomes one Qdrant chunk."""
     serializer = _document_serializer(chunker, document)
+    table_registry = {
+        _table_ref(table): table for table in _document_table_items(document)
+    }
     emitted_tables: set[str] = set()
+    emitted_mixed_items: set[str] = set()
+    rendered_tables: list[str] = []
     chunks: list[DocumentChunk] = []
     raw_count = 0
+    table_fragments_dropped = 0
+    junk_chunks_dropped = 0
+
+    def append_text(
+        text: str,
+        *,
+        headings: tuple[str, ...],
+    ) -> None:
+        nonlocal junk_chunks_dropped, table_fragments_dropped
+        for piece in split_oversized_text(
+            text,
+            max_tokens=max_tokens,
+            tokenizer=tokenizer,
+        ):
+            if not is_useful_chunk_text(piece):
+                junk_chunks_dropped += 1
+                continue
+            if _is_residual_table_fragment(piece, rendered_tables):
+                table_fragments_dropped += 1
+                continue
+            if _is_pure_table(piece):
+                fallback_ref = _fallback_table_ref(piece, len(chunks))
+                chunks.append(
+                    _make_table_chunk(
+                        markdown=piece,
+                        headings=headings,
+                        table_ref=fallback_ref,
+                        caption="",
+                        max_tokens=max_tokens,
+                        tokenizer=tokenizer,
+                    )
+                )
+            else:
+                chunks.append(DocumentChunk(text=piece, headings=headings))
+
+    def emit_table(table: Any, *, headings: tuple[str, ...]) -> None:
+        ref = _table_ref(table)
+        table_registry.setdefault(ref, table)
+        if ref in emitted_tables:
+            return
+        markdown = _render_full_table_markdown(
+            table,
+            document=document,
+            serializer=serializer,
+        )
+        if not is_useful_chunk_text(markdown):
+            raise RuntimeError(
+                f"Docling table rendered without useful content: "
+                f"path={path_name} ref={ref}"
+            )
+        caption = _table_caption(table, document)
+        table_chunk = _make_table_chunk(
+            markdown=markdown,
+            headings=headings,
+            table_ref=ref,
+            caption=caption,
+            max_tokens=max_tokens,
+            tokenizer=tokenizer,
+        )
+        chunks.append(table_chunk)
+        rendered_tables.append(markdown)
+        emitted_tables.add(ref)
+        logger.info(
+            "Table chunk path=%s ref=%s rows=%s chars=%s embedding_parts=%s",
+            path_name,
+            ref,
+            table_chunk.row_count,
+            len(table_chunk.text),
+            len(table_chunk.embedding_parts),
+        )
+
     for raw in chunker.chunk(dl_doc=document):
         raw_count += 1
         headings = _headings_from_chunk(raw)
-        table_items = _table_items_from_chunk(raw)
-        other_items = _non_table_items_from_chunk(raw)
-        emitted_table = False
-        for table in table_items:
-            ref = _table_ref(table)
-            if ref in emitted_tables:
-                continue
-            markdown = _render_full_table_markdown(
-                table,
-                document=document,
-                serializer=serializer,
-            )
-            if not markdown:
-                logger.warning(
-                    "Docling table rendered empty path=%s ref=%s",
-                    path_name,
-                    ref,
-                )
-                continue
-            emitted_tables.add(ref)
-            emitted_table = True
-            logger.info(
-                "Table chunk path=%s ref=%s chars=%s unbounded=true",
-                path_name,
-                ref,
-                len(markdown),
-            )
-            chunks.append(
-                DocumentChunk(text=markdown, headings=headings, atomic=True)
-            )
+        doc_items = _doc_items(raw)
+        table_items = [item for item in doc_items if _is_table_item(item)]
+        if table_items:
+            # Never contextualize a chunk that mentions a TableItem: HybridChunker
+            # may emit many raw segments with the same metadata. Serialize only
+            # non-table items once and inject the full structural table once.
+            pending_prose: list[Any] = []
 
-        if emitted_table and not other_items:
-            continue
-        if emitted_table and other_items:
-            prose = _serialize_items(
-                other_items,
-                document=document,
-                serializer=serializer,
-            )
-            if not prose:
-                contextualized = str(chunker.contextualize(raw)).strip()
-                prose = _prose_without_tables(contextualized)
-            for piece in split_oversized_text(
-                prose,
-                max_tokens=max_tokens,
-                tokenizer=tokenizer,
-            ):
-                chunks.append(DocumentChunk(text=piece, headings=headings))
+            def flush_pending() -> None:
+                if not pending_prose:
+                    return
+                prose = _serialize_items(
+                    pending_prose,
+                    document=document,
+                    serializer=serializer,
+                )
+                pending_prose.clear()
+                if prose:
+                    append_text(prose, headings=headings)
+
+            for item in doc_items:
+                if _is_table_item(item):
+                    flush_pending()
+                    ref = _table_ref(item)
+                    if ref in emitted_tables:
+                        table_fragments_dropped += 1
+                    else:
+                        emit_table(
+                            table_registry.get(ref, item),
+                            headings=headings,
+                        )
+                    continue
+                item_ref = _item_ref(item)
+                if item_ref in emitted_mixed_items:
+                    continue
+                emitted_mixed_items.add(item_ref)
+                pending_prose.append(item)
+            flush_pending()
             continue
 
         text = str(chunker.contextualize(raw)).strip()
         if not text:
             continue
-        pieces = split_oversized_text(
-            text,
-            max_tokens=max_tokens,
-            tokenizer=tokenizer,
-        )
-        if len(pieces) > 1:
-            logger.debug(
-                "Split oversized chunk path=%s headings=%s pieces=%s chars=%s",
+        append_text(text, headings=headings)
+
+    # A valid TableItem should normally appear in HybridChunker metadata. Render
+    # any structural table it omitted so the document never silently loses it.
+    for ref, table in table_registry.items():
+        if ref not in emitted_tables:
+            logger.warning(
+                "Table missing from HybridChunker metadata path=%s ref=%s; "
+                "appending at document end",
                 path_name,
-                " / ".join(headings) if headings else "-",
-                len(pieces),
-                len(text),
+                ref,
             )
-        for piece in pieces:
-            chunks.append(DocumentChunk(text=piece, headings=headings))
-    logger.debug("HybridChunker raw chunks path=%s raw=%s", path_name, raw_count)
-    return merge_split_table_chunks(chunks)
+            emit_table(table, headings=())
+
+    table_chunks = [chunk for chunk in chunks if chunk.chunk_type == "table"]
+    counts: dict[str, int] = {}
+    for chunk in table_chunks:
+        if chunk.table_ref:
+            counts[chunk.table_ref] = counts.get(chunk.table_ref, 0) + 1
+    duplicate_refs = sorted(ref for ref, count in counts.items() if count != 1)
+    missing_refs = sorted(set(table_registry) - set(counts))
+    if duplicate_refs or missing_refs:
+        raise RuntimeError(
+            f"Table chunk invariant failed path={path_name} "
+            f"duplicates={duplicate_refs} missing={missing_refs}"
+        )
+
+    logger.info(
+        "Chunked document path=%s raw=%s stored=%s tables_detected=%s "
+        "tables_emitted=%s table_fragments_dropped=%s junk_chunks_dropped=%s",
+        path_name,
+        raw_count,
+        len(chunks),
+        len(table_registry),
+        len(table_chunks),
+        table_fragments_dropped,
+        junk_chunks_dropped,
+    )
+    return chunks
+
+
+def _document_table_items(document: Any) -> list[Any]:
+    found: dict[str, Any] = {}
+    tables = getattr(document, "tables", None)
+    if tables is not None:
+        try:
+            for table in tables:
+                if _is_table_item(table):
+                    found.setdefault(_table_ref(table), table)
+        except TypeError:
+            pass
+    iterator = getattr(document, "iterate_items", None)
+    if callable(iterator):
+        try:
+            items = iterator()
+        except Exception:
+            items = ()
+        for entry in items:
+            item = entry[0] if isinstance(entry, tuple) else entry
+            if _is_table_item(item):
+                found.setdefault(_table_ref(item), item)
+    return list(found.values())
 
 
 def _document_serializer(chunker: Any, document: Any) -> Any | None:
@@ -763,6 +877,158 @@ def _table_ref(table: Any) -> str:
     if ref:
         return str(ref)
     return f"id:{id(table)}"
+
+
+def _item_ref(item: Any) -> str:
+    ref = getattr(item, "self_ref", None)
+    if ref:
+        return str(ref)
+    return f"id:{id(item)}"
+
+
+def _table_caption(table: Any, document: Any) -> str:
+    caption_text = getattr(table, "caption_text", None)
+    if callable(caption_text):
+        for kwargs in ({"doc": document}, {}):
+            try:
+                value = caption_text(**kwargs) if kwargs else caption_text()
+            except TypeError:
+                continue
+            except Exception:
+                logger.debug("table.caption_text failed", exc_info=True)
+                break
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    captions = getattr(table, "captions", None)
+    if isinstance(captions, (list, tuple)):
+        values = [str(value).strip() for value in captions if str(value).strip()]
+        return " ".join(values)
+    return ""
+
+
+def _make_table_chunk(
+    *,
+    markdown: str,
+    headings: tuple[str, ...],
+    table_ref: str,
+    caption: str,
+    max_tokens: int,
+    tokenizer: Any | None,
+) -> DocumentChunk:
+    rendered = markdown.strip()
+    if caption and caption not in rendered:
+        rendered = f"Подпись таблицы: {caption}\n\n{rendered}"
+    embedding_parts = _table_embedding_parts(
+        markdown,
+        headings=headings,
+        caption=caption,
+        max_tokens=max_tokens,
+        tokenizer=tokenizer,
+    )
+    return DocumentChunk(
+        text=rendered,
+        headings=headings,
+        atomic=True,
+        chunk_type="table",
+        table_ref=table_ref,
+        embedding_parts=embedding_parts,
+        row_count=_table_row_count(markdown),
+    )
+
+
+def _table_embedding_parts(
+    markdown: str,
+    *,
+    headings: tuple[str, ...],
+    caption: str,
+    max_tokens: int,
+    tokenizer: Any | None,
+) -> tuple[str, ...]:
+    context_lines = ["[Таблица]"]
+    if headings:
+        context_lines.append(f"Раздел: {' / '.join(headings)}")
+    if caption:
+        context_lines.append(f"Подпись: {caption}")
+    prefix = "\n".join(context_lines)
+    full = f"{prefix}\n\n{markdown.strip()}"
+    if _token_count(full, tokenizer) <= max_tokens:
+        return (full,)
+
+    parsed = _parse_pipe_table(markdown)
+    if parsed is None:
+        pieces = _hard_split_text(
+            markdown.strip(),
+            max_tokens=max_tokens,
+            tokenizer=tokenizer,
+        )
+        return tuple(f"{prefix}\n\n{piece}" for piece in pieces if piece.strip())
+
+    header, separator, rows = parsed
+    header_block = "\n".join(item for item in (header, separator) if item)
+    fixed = f"{prefix}\n\n{header_block}".strip()
+    parts: list[str] = []
+    buffered_rows: list[str] = []
+
+    def flush() -> None:
+        if buffered_rows:
+            parts.append(f"{fixed}\n" + "\n".join(buffered_rows))
+            buffered_rows.clear()
+
+    for row in rows:
+        trial_rows = [*buffered_rows, row]
+        trial = f"{fixed}\n" + "\n".join(trial_rows)
+        if buffered_rows and _token_count(trial, tokenizer) > max_tokens:
+            flush()
+            trial = f"{fixed}\n{row}"
+        if _token_count(trial, tokenizer) <= max_tokens:
+            buffered_rows.append(row)
+            continue
+        # A single very wide row may exceed the embedding budget. It remains
+        # intact in payload text; only its searchable representation is split.
+        flush()
+        row_parts = _hard_split_text(
+            row,
+            max_tokens=max_tokens,
+            tokenizer=tokenizer,
+        )
+        parts.extend(f"{fixed}\n{part}" for part in row_parts if part.strip())
+    flush()
+    return tuple(parts or [full])
+
+
+def _table_row_count(markdown: str) -> int:
+    parsed = _parse_pipe_table(markdown)
+    if parsed is not None:
+        return len(parsed[2])
+    return 0
+
+
+def _fallback_table_ref(text: str, ordinal: int) -> str:
+    digest = hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:16]
+    return f"markdown:{ordinal}:{digest}"
+
+
+def is_useful_chunk_text(text: str) -> bool:
+    """Return false for whitespace, markup-only and table-separator-only chunks."""
+    stripped = re.sub(r"<[^>]+>", " ", text or "")
+    return bool(re.search(r"[^\W_]", stripped, flags=re.UNICODE))
+
+
+def _is_residual_table_fragment(text: str, full_tables: Sequence[str]) -> bool:
+    if not full_tables or "|" not in text:
+        return False
+    normalized = _normalized_search_text(text)
+    if not normalized:
+        return True
+    return any(
+        normalized != _normalized_search_text(table)
+        and normalized in _normalized_search_text(table)
+        for table in full_tables
+    )
+
+
+def _normalized_search_text(text: str) -> str:
+    return " ".join(re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE))
 
 
 def _render_full_table_markdown(
@@ -1010,12 +1276,15 @@ def _markdown_table_spans(text: str) -> list[tuple[int, int]]:
 
 
 def _is_markdown_table_start(stripped_lines: list[str], index: int) -> bool:
-    if index >= len(stripped_lines) or not _is_table_row(stripped_lines[index]):
+    if (
+        index >= len(stripped_lines)
+        or not _is_table_row(stripped_lines[index])
+        or _is_table_sep(stripped_lines[index])
+    ):
         return False
     if index + 1 >= len(stripped_lines):
         return False
-    nxt = stripped_lines[index + 1]
-    return _is_table_sep(nxt) or _is_table_row(nxt)
+    return _is_table_sep(stripped_lines[index + 1])
 
 
 def _is_pure_table(text: str) -> bool:
