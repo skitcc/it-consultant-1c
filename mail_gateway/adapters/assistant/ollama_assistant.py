@@ -1,4 +1,4 @@
-"""Two-layer Ollama backend via OpenAI-compatible chat completions."""
+"""Two-layer Ollama backend via native ``/api/chat``."""
 
 from __future__ import annotations
 
@@ -139,15 +139,15 @@ class OllamaAssistant(Assistant):
             "model": self._model,
             "messages": ollama_messages,
             "stream": False,
-            "reasoning_effort": reasoning_effort,
-            "temperature": self._temperature,
-            "top_p": self._top_p,
-            "seed": self._seed,
-            "max_tokens": self._max_tokens,
+            "think": _think_value(reasoning_effort),
             "keep_alive": -1,
-            "stop": list(_STOP_SEQUENCES),
             "options": {
+                "temperature": self._temperature,
+                "top_p": self._top_p,
+                "seed": self._seed,
+                "num_predict": self._max_tokens,
                 "num_ctx": self._context_length,
+                "stop": list(_STOP_SEQUENCES),
             },
         }
         started_at = time.perf_counter()
@@ -159,7 +159,7 @@ class OllamaAssistant(Assistant):
                 logger.info(
                     "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
                     "system_chars=%s history_chars=%s rag_chars=%s "
-                    "max_tokens=%s reasoning_effort=%s temperature=%s top_p=%s seed=%s",
+                    "num_predict=%s think=%s temperature=%s top_p=%s seed=%s",
                     layer,
                     self._model,
                     conversation_id,
@@ -168,14 +168,14 @@ class OllamaAssistant(Assistant):
                     history_chars,
                     len(rag_context),
                     self._max_tokens,
-                    reasoning_effort,
+                    request_body["think"],
                     self._temperature,
                     self._top_p,
                     self._seed,
                 )
                 with httpx.Client(timeout=self._timeout) as client:
                     response = client.post(
-                        f"{self._base_url}/v1/chat/completions",
+                        f"{self._base_url}/api/chat",
                         json=request_body,
                     )
                     response.raise_for_status()
@@ -191,56 +191,53 @@ class OllamaAssistant(Assistant):
                 ) from exc
 
             elapsed = time.perf_counter() - started_at
-            choice = _first_choice(data)
-            if choice is None:
+            if not isinstance(data, dict):
                 raise AssistantUnavailableError(
-                    f"Ollama layer {layer} returned no completion choice"
+                    f"Ollama layer {layer} returned no chat response"
                 )
-            finish_reason = str(choice.get("finish_reason") or "")
-            if finish_reason == "length":
+            done_reason = str(data.get("done_reason") or "")
+            if done_reason == "length":
                 logger.warning(
                     "Ollama output truncated layer=%s conversation_id=%s",
                     layer,
                     conversation_id,
                 )
                 raise AssistantUnavailableError(f"Ollama layer {layer} output truncated")
-            if finish_reason and finish_reason != "stop":
+            if done_reason and done_reason != "stop":
                 logger.warning(
-                    "Ollama unexpected finish_reason layer=%s conversation_id=%s "
-                    "finish_reason=%s",
+                    "Ollama unexpected done_reason layer=%s conversation_id=%s "
+                    "done_reason=%s",
                     layer,
                     conversation_id,
-                    finish_reason,
+                    done_reason,
                 )
                 raise AssistantUnavailableError(
-                    f"Ollama layer {layer} stopped with {finish_reason}"
+                    f"Ollama layer {layer} stopped with {done_reason}"
                 )
 
-            message = choice.get("message")
+            message = data.get("message")
             if not isinstance(message, dict):
                 raise AssistantUnavailableError(
                     f"Ollama layer {layer} returned no message"
                 )
             reasoning_chars = _reasoning_chars(message)
             content = message.get("content")
-            usage = data.get("usage") if isinstance(data, dict) else None
-            if not isinstance(usage, dict):
-                usage = {}
-            prompt_tokens = usage.get("prompt_tokens")
-            total_tokens = usage.get("total_tokens")
+            prompt_tokens = data.get("prompt_eval_count")
+            completion_tokens = data.get("eval_count")
+            total_tokens = _sum_tokens(prompt_tokens, completion_tokens)
             logger.info(
                 "Ollama layer=%s done conversation_id=%s elapsed=%.3fs "
-                "finish_reason=%s prompt_tokens=%s/%s (%s) "
+                "done_reason=%s prompt_tokens=%s/%s (%s) "
                 "completion_tokens=%s total_tokens=%s/%s (%s) "
                 "reasoning_chars=%s content_chars=%s",
                 layer,
                 conversation_id,
                 elapsed,
-                finish_reason or None,
+                done_reason or None,
                 prompt_tokens,
                 self._context_length,
                 _ratio_label(prompt_tokens, self._context_length),
-                usage.get("completion_tokens"),
+                completion_tokens,
                 total_tokens,
                 self._context_length,
                 _ratio_label(total_tokens, self._context_length),
@@ -269,14 +266,16 @@ def _ratio_label(used: object, total: int) -> str:
     return f"{100.0 * used / total:.1f}%"
 
 
-def _first_choice(data: object) -> dict | None:
-    if not isinstance(data, dict):
+def _sum_tokens(prompt_tokens: object, completion_tokens: object) -> int | None:
+    if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
         return None
-    choices = data.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return None
-    choice = choices[0]
-    return choice if isinstance(choice, dict) else None
+    return prompt_tokens + completion_tokens
+
+
+def _think_value(reasoning_effort: str) -> str | bool:
+    if reasoning_effort == "none":
+        return False
+    return reasoning_effort
 
 
 def _reasoning_chars(message: dict) -> int:

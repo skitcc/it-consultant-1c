@@ -24,27 +24,22 @@ def _message(*, rag: str | None = None) -> IncomingMessage:
     return with_rag_context(message, rag)
 
 
-def _completion(
+def _chat_response(
     answer_html: str,
     *,
-    reasoning: str = "internal",
-    finish_reason: str = "stop",
+    thinking: str = "internal",
+    done_reason: str = "stop",
 ) -> dict:
     return {
-        "choices": [
-            {
-                "finish_reason": finish_reason,
-                "message": {
-                    "reasoning": reasoning,
-                    "content": answer_html,
-                },
-            }
-        ],
-        "usage": {
-            "prompt_tokens": 100,
-            "completion_tokens": 50,
-            "total_tokens": 150,
+        "message": {
+            "role": "assistant",
+            "thinking": thinking,
+            "content": answer_html,
         },
+        "done": True,
+        "done_reason": done_reason,
+        "prompt_eval_count": 100,
+        "eval_count": 50,
     }
 
 
@@ -80,7 +75,7 @@ def _install_fake_client(monkeypatch, replies: list[dict]) -> list[dict]:
     return seen
 
 
-def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
+def test_ollama_assistant_uses_native_chat_api_and_two_think_levels(
     monkeypatch,
     caplog,
 ) -> None:
@@ -89,13 +84,13 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
     seen = _install_fake_client(
         monkeypatch,
         [
-            _completion(
+            _chat_response(
                 "<p>Черновик</p>",
-                reasoning="layer one private reasoning",
+                thinking="layer one private reasoning",
             ),
-            _completion(
+            _chat_response(
                 "<p>Проверенный ответ</p>",
-                reasoning="layer two private reasoning",
+                thinking="layer two private reasoning",
             ),
         ],
     )
@@ -117,20 +112,22 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
         end_request(timer)
 
     assert answer == "<p>Проверенный ответ</p>"
-    chats = [item for item in seen if item["url"].endswith("/v1/chat/completions")]
+    chats = [item for item in seen if item["url"].endswith("/api/chat")]
     assert len(chats) == 2
-    assert not any("/api/tokenize" in item["url"] for item in seen)
-    assert chats[0]["json"]["reasoning_effort"] == "medium"
-    assert chats[1]["json"]["reasoning_effort"] == "high"
+    assert not any("/v1/chat/completions" in item["url"] for item in seen)
+    assert chats[0]["json"]["think"] == "medium"
+    assert chats[1]["json"]["think"] == "high"
     for item in chats:
         assert item["json"]["stream"] is False
-        assert item["json"]["temperature"] == 0.0
-        assert item["json"]["top_p"] == 0.1
-        assert item["json"]["max_tokens"] == 4096
-        assert item["json"]["seed"] == 0
         assert item["json"]["keep_alive"] == -1
-        assert item["json"]["stop"] == ["\nПользователь:", "\nUser:"]
-        assert item["json"]["options"] == {"num_ctx": 8192}
+        assert "reasoning_effort" not in item["json"]
+        assert "max_tokens" not in item["json"]
+        assert item["json"]["options"]["temperature"] == 0.0
+        assert item["json"]["options"]["top_p"] == 0.1
+        assert item["json"]["options"]["num_predict"] == 4096
+        assert item["json"]["options"]["seed"] == 0
+        assert item["json"]["options"]["num_ctx"] == 8192
+        assert item["json"]["options"]["stop"] == ["\nПользователь:", "\nUser:"]
         assert "response_format" not in item["json"]
         assert rag in item["json"]["messages"][0]["content"]
     assert "Черновик" in chats[1]["json"]["messages"][1]["content"]
@@ -144,26 +141,26 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
 def test_ollama_assistant_skips_verifier_without_rag(monkeypatch) -> None:
     seen = _install_fake_client(
         monkeypatch,
-        [_completion("<p>plain</p>")],
+        [_chat_response("<p>plain</p>")],
     )
 
     answer = OllamaAssistant(model="gpt-oss:120b", verifier_enabled=True).ask(
         _message()
     )
     assert answer == "<p>plain</p>"
-    assert len([item for item in seen if item["url"].endswith("/v1/chat/completions")]) == 1
+    assert len([item for item in seen if item["url"].endswith("/api/chat")]) == 1
 
 
 def test_ollama_assistant_skips_verifier_when_disabled(monkeypatch) -> None:
     rag = "Документ: guide.pdf\nТочный факт из документа."
     seen = _install_fake_client(
         monkeypatch,
-        [_completion("<p>Черновик</p>")],
+        [_chat_response("<p>Черновик</p>")],
     )
 
     answer = OllamaAssistant(model="gpt-oss:120b").ask(_message(rag=rag))
     assert answer == "<p>Черновик</p>"
-    assert len([item for item in seen if item["url"].endswith("/v1/chat/completions")]) == 1
+    assert len([item for item in seen if item["url"].endswith("/api/chat")]) == 1
 
 
 def test_ollama_assistant_keeps_draft_when_verifier_is_empty(monkeypatch) -> None:
@@ -171,8 +168,8 @@ def test_ollama_assistant_keeps_draft_when_verifier_is_empty(monkeypatch) -> Non
     _install_fake_client(
         monkeypatch,
         [
-            _completion("<p>Черновик</p>"),
-            _completion("   "),
+            _chat_response("<p>Черновик</p>"),
+            _chat_response("   "),
         ],
     )
 
@@ -183,21 +180,20 @@ def test_ollama_assistant_keeps_draft_when_verifier_is_empty(monkeypatch) -> Non
 def test_ollama_assistant_accepts_legacy_json_answer_html(monkeypatch) -> None:
     rag = "Документ: a.md\nПервая строка."
     payload = {
-        "choices": [
-            {
-                "finish_reason": "stop",
-                "message": {
-                    "content": json.dumps(
-                        {
-                            "evidence": [{"quote": "not in rag"}],
-                            "answer_html": "<p>Ответ</p>",
-                        },
-                        ensure_ascii=False,
-                    )
+        "message": {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "evidence": [{"quote": "not in rag"}],
+                    "answer_html": "<p>Ответ</p>",
                 },
-            }
-        ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                ensure_ascii=False,
+            ),
+        },
+        "done": True,
+        "done_reason": "stop",
+        "prompt_eval_count": 10,
+        "eval_count": 5,
     }
     _install_fake_client(monkeypatch, [payload, payload])
     assert (
@@ -210,7 +206,7 @@ def test_ollama_assistant_rejects_reasoning_leaked_into_answer(monkeypatch) -> N
     rag = "Документ: a.md\nФакт."
     _install_fake_client(
         monkeypatch,
-        [_completion("thinking - скрытый текст content Ответ")],
+        [_chat_response("thinking - скрытый текст content Ответ")],
     )
 
     answer = OllamaAssistant(model="m").ask(_message(rag=rag))
@@ -244,7 +240,7 @@ def test_ollama_assistant_raises_typed_error_on_timeout(monkeypatch) -> None:
 def test_ollama_assistant_rejects_truncated_completion(monkeypatch) -> None:
     _install_fake_client(
         monkeypatch,
-        [_completion("<p>partial</p>", finish_reason="length")],
+        [_chat_response("<p>partial</p>", done_reason="length")],
     )
 
     with pytest.raises(AssistantUnavailableError):
