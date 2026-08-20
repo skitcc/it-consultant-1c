@@ -65,9 +65,19 @@ _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
 _HTML_BLOCK_RE = re.compile(r"<(p|table|ul|ol|h2|h3)\b", re.IGNORECASE)
+_INTERNAL_REASONING_PREFIX = re.compile(
+    r"^\s*(?:<[^>]+>\s*)*(?:thinking|analysis|reasoning|content)\b",
+    re.IGNORECASE,
+)
+
+
+class UnsafeAnswerError(ValueError):
+    """Model output contains an internal reasoning marker."""
 
 
 def render_answer(text: str, *, source_names: Sequence[str] = ()) -> str:
+    if _INTERNAL_REASONING_PREFIX.match(text or ""):
+        raise UnsafeAnswerError("internal reasoning must not be rendered")
     cleaned = strip_disallowed_markup(text or "")
     html = (
         cleaned

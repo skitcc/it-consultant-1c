@@ -1,6 +1,9 @@
+import pytest
+
 from mail_gateway.application.render_answer import (
     NO_SOURCES_TEXT,
     SOURCES_HEADING,
+    UnsafeAnswerError,
     render_answer,
     strip_sources_footer,
 )
@@ -67,3 +70,17 @@ def test_strip_sources_footer_from_history() -> None:
         "guide.pdf"
     )
     assert strip_sources_footer(body) == "Ответ без ссылок."
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "thinking - private content Public",
+        "analysis: private",
+        "<p>reasoning internal</p><p>answer</p>",
+        "content\nPublic answer",
+    ],
+)
+def test_render_answer_rejects_internal_reasoning_prefix(raw: str) -> None:
+    with pytest.raises(UnsafeAnswerError):
+        render_answer(raw)

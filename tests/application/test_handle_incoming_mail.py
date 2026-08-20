@@ -1,6 +1,7 @@
 from mail_gateway.application.handle_incoming_mail import (
     ADMIN_FALLBACK_TEXT,
     INSUFFICIENT_DOCS_TEXT,
+    TECHNICAL_FAILURE_TEXT,
     UNVERIFIED_DRAFT_TEXT,
     HandleIncomingMail,
 )
@@ -130,6 +131,12 @@ class FakeRetriever:
         return list(self.chunks)
 
 
+class FailingRetriever:
+    def retrieve(self, query: str) -> list[DocumentChunk]:
+        del query
+        raise RuntimeError("qdrant unavailable")
+
+
 def test_attaches_rag_context_from_retriever() -> None:
     retriever = FakeRetriever(
         [
@@ -190,6 +197,57 @@ def test_unverified_draft_when_assistant_returns_none_with_chunks() -> None:
 
     assert UNVERIFIED_DRAFT_TEXT in sender.sent[0].body
     assert "guide.pdf" in sender.sent[0].body
+
+
+def test_assistant_error_sends_technical_fallback() -> None:
+    class FailingAssistant:
+        def ask(self, message: IncomingMessage) -> str | None:
+            del message
+            raise RuntimeError("ollama timeout")
+
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=FailingAssistant(),
+        mail_sender=sender,
+        document_retriever=FakeRetriever(
+            [DocumentChunk(text="fact", source_path="guide.pdf", chunk_index=0)]
+        ),
+    )
+
+    handle(_message())
+
+    assert len(sender.sent) == 1
+    assert TECHNICAL_FAILURE_TEXT in sender.sent[0].body
+    assert "guide.pdf" in sender.sent[0].body
+
+
+def test_retrieval_error_sends_technical_fallback_not_insufficient_docs() -> None:
+    assistant = FakeAssistant("should not run")
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=assistant,
+        mail_sender=sender,
+        document_retriever=FailingRetriever(),
+    )
+
+    handle(_message())
+
+    assert assistant.calls == []
+    assert TECHNICAL_FAILURE_TEXT in sender.sent[0].body
+    assert INSUFFICIENT_DOCS_TEXT not in sender.sent[0].body
+
+
+def test_reasoning_leak_is_replaced_with_unverified_fallback() -> None:
+    sender = FakeSender()
+    handle = HandleIncomingMail(
+        assistant=FakeAssistant("thinking - private content Public answer"),
+        mail_sender=sender,
+    )
+
+    handle(_message())
+
+    assert "thinking" not in sender.sent[0].body.lower()
+    assert UNVERIFIED_DRAFT_TEXT in sender.sent[0].body
 
 
 def test_ignores_own_bot_email_silently() -> None:

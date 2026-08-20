@@ -5,7 +5,7 @@ from mail_gateway.application.format_documentation import (
     format_documentation_context,
     unique_source_names,
 )
-from mail_gateway.application.render_answer import render_answer
+from mail_gateway.application.render_answer import UnsafeAnswerError, render_answer
 from mail_gateway.domain.models import (
     IncomingMessage,
     Reply,
@@ -31,6 +31,14 @@ UNVERIFIED_DRAFT_TEXT = (
     "Не удалось подтвердить ответ по документации. "
     "Повторите запрос позже или обратитесь к администратору."
 )
+TECHNICAL_FAILURE_TEXT = (
+    "Сервис временно не смог обработать запрос. "
+    "Повторите запрос позже или обратитесь к администратору."
+)
+
+
+class _DocumentRetrievalError(RuntimeError):
+    pass
 
 
 def _normalize_email(address: str) -> str:
@@ -75,7 +83,11 @@ class HandleIncomingMail:
             return
 
         enriched = self._with_history(message)
-        enriched = self._with_documentation(enriched)
+        try:
+            enriched = self._with_documentation(enriched)
+        except _DocumentRetrievalError:
+            self._send(enriched, TECHNICAL_FAILURE_TEXT)
+            return
 
         if self._document_retriever is not None and not enriched.rag_chunks:
             logger.info(
@@ -85,7 +97,15 @@ class HandleIncomingMail:
             self._send(enriched, INSUFFICIENT_DOCS_TEXT)
             return
 
-        reply_text = self._assistant.ask(enriched)
+        try:
+            reply_text = self._assistant.ask(enriched)
+        except Exception:
+            logger.exception(
+                "Assistant failed conversation_id=%s; using technical fallback",
+                message.conversation_id,
+            )
+            self._send(enriched, TECHNICAL_FAILURE_TEXT)
+            return
         if reply_text is not None:
             reply_text = reply_text.strip()
         if not reply_text:
@@ -103,7 +123,14 @@ class HandleIncomingMail:
 
     def _send(self, message: IncomingMessage, reply_text: str) -> None:
         sources = unique_source_names(message.rag_chunks)
-        body = render_answer(reply_text, source_names=sources)
+        try:
+            body = render_answer(reply_text, source_names=sources)
+        except UnsafeAnswerError:
+            logger.exception(
+                "Unsafe internal reasoning blocked conversation_id=%s",
+                message.conversation_id,
+            )
+            body = render_answer(UNVERIFIED_DRAFT_TEXT, source_names=sources)
         self._mail_sender.send_reply(
             Reply(
                 conversation_id=message.conversation_id,
@@ -160,12 +187,12 @@ class HandleIncomingMail:
 
         try:
             chunks = list(self._document_retriever.retrieve(query))
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Document retrieval failed conversation_id=%s",
                 message.conversation_id,
             )
-            return message
+            raise _DocumentRetrievalError from exc
 
         context = format_documentation_context(chunks)
         logger.info(
