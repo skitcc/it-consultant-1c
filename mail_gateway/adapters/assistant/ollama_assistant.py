@@ -146,47 +146,24 @@ class OllamaAssistant(Assistant):
             len(str(item.get("body") or "")) for item in payload["messages"]
         )
         try:
+            logger.info(
+                "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
+                "system_chars=%s history_chars=%s rag_chars=%s "
+                "max_tokens=%s reasoning_effort=%s temperature=%s top_p=%s seed=%s",
+                layer,
+                self._model,
+                conversation_id,
+                len(payload["messages"]),
+                len(str(payload["system_prompt"])),
+                history_chars,
+                len(rag_context),
+                self._max_tokens,
+                reasoning_effort,
+                self._temperature,
+                self._top_p,
+                self._seed,
+            )
             with httpx.Client(timeout=self._timeout) as client:
-                prompt_tokens = _count_prompt_tokens(
-                    client,
-                    base_url=self._base_url,
-                    model=self._model,
-                    messages=ollama_messages,
-                )
-                logger.info(
-                    "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
-                    "system_chars=%s history_chars=%s rag_chars=%s "
-                    "prompt_tokens=%s/%s (%s) max_tokens=%s remaining_tokens=%s "
-                    "reasoning_effort=%s temperature=%s top_p=%s seed=%s",
-                    layer,
-                    self._model,
-                    conversation_id,
-                    len(payload["messages"]),
-                    len(str(payload["system_prompt"])),
-                    history_chars,
-                    len(rag_context),
-                    prompt_tokens if prompt_tokens is not None else "unknown",
-                    self._context_length,
-                    _ratio_label(prompt_tokens, self._context_length),
-                    self._max_tokens,
-                    _remaining_tokens(prompt_tokens, self._context_length),
-                    reasoning_effort,
-                    self._temperature,
-                    self._top_p,
-                    self._seed,
-                )
-                if (
-                    prompt_tokens is not None
-                    and prompt_tokens >= self._context_length
-                ):
-                    logger.warning(
-                        "Prompt fills the context window layer=%s conversation_id=%s "
-                        "prompt_tokens=%s context_length=%s",
-                        layer,
-                        conversation_id,
-                        prompt_tokens,
-                        self._context_length,
-                    )
                 response = client.post(
                     f"{self._base_url}/v1/chat/completions",
                     json=request_body,
@@ -274,50 +251,10 @@ class OllamaAssistant(Assistant):
         )
 
 
-def _count_prompt_tokens(
-    client: httpx.Client,
-    *,
-    base_url: str,
-    model: str,
-    messages: list[dict[str, str]],
-) -> int | None:
-    prompt = "\n\n".join(
-        f"{item.get('role', '')}\n{item.get('content', '')}" for item in messages
-    )
-    try:
-        response = client.post(
-            f"{base_url}/api/tokenize",
-            json={"model": model, "content": prompt, "prompt": prompt},
-        )
-        response.raise_for_status()
-        data = response.json()
-    except (httpx.HTTPError, ValueError):
-        logger.debug("Ollama tokenize failed model=%s; using character estimate", model)
-        return _estimate_tokens(prompt)
-    tokens = data.get("tokens") if isinstance(data, dict) else None
-    if isinstance(tokens, list):
-        return len(tokens)
-    count = data.get("count") if isinstance(data, dict) else None
-    if isinstance(count, int) and count >= 0:
-        return count
-    return _estimate_tokens(prompt)
-
-
-def _estimate_tokens(text: str) -> int:
-    # Cyrillic and mixed HTML usually take more tokens than English (~3 chars).
-    return max(1, (len(text) + 2) // 3)
-
-
 def _ratio_label(used: object, total: int) -> str:
     if not isinstance(used, int) or total <= 0:
         return "unknown"
     return f"{100.0 * used / total:.1f}%"
-
-
-def _remaining_tokens(used: object, total: int) -> str:
-    if not isinstance(used, int):
-        return "unknown"
-    return str(max(0, total - used))
 
 
 def _first_choice(data: object) -> dict | None:

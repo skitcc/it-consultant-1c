@@ -58,16 +58,6 @@ def _install_fake_client(monkeypatch, replies: list[dict]) -> list[dict]:
         def json(self) -> dict:
             return next(responses)
 
-    class TokenizeResponse:
-        def __init__(self, count: int) -> None:
-            self._count = count
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {"tokens": [0] * self._count}
-
     class FakeClient:
         def __init__(self, *args, **kwargs) -> None:
             self.timeout = kwargs.get("timeout")
@@ -80,10 +70,6 @@ def _install_fake_client(monkeypatch, replies: list[dict]) -> list[dict]:
 
         def post(self, url: str, json: dict):
             seen.append({"url": url, "json": json})
-            if url.endswith("/api/tokenize"):
-                prompt = str(json.get("content") or json.get("prompt") or "")
-                count = max(1, (len(prompt) + 2) // 3)
-                return TokenizeResponse(count)
             return FakeResponse()
 
     monkeypatch.setattr(
@@ -127,7 +113,7 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
     assert answer == "<p>Проверенный ответ</p>"
     chats = [item for item in seen if item["url"].endswith("/v1/chat/completions")]
     assert len(chats) == 2
-    assert any(item["url"].endswith("/api/tokenize") for item in seen)
+    assert not any("/api/tokenize" in item["url"] for item in seen)
     assert chats[0]["json"]["reasoning_effort"] == "medium"
     assert chats[1]["json"]["reasoning_effort"] == "high"
     for item in chats:
