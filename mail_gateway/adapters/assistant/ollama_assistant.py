@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
 
 import httpx
 
@@ -25,42 +24,10 @@ _INTERNAL_REASONING_PREFIX = re.compile(
     r"^\s*(?:<[^>]+>\s*)*(?:thinking|analysis|reasoning|content)\b",
     re.IGNORECASE,
 )
-_ANSWER_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "grounded_email_answer",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "evidence": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "quote": {"type": "string", "minLength": 1},
-                        },
-                        "required": ["quote"],
-                        "additionalProperties": False,
-                    },
-                },
-                "answer_html": {"type": "string", "minLength": 1},
-            },
-            "required": ["evidence", "answer_html"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-
-@dataclass(frozen=True, slots=True)
-class _GroundedAnswer:
-    answer_html: str
-    evidence: tuple[str, ...]
 
 
 class OllamaAssistant(Assistant):
-    """Two-layer grounded chat: draft, then verify against the same chunks."""
+    """Two-layer chat: draft, then a second pass over the same chunks."""
 
     def __init__(
         self,
@@ -71,6 +38,7 @@ class OllamaAssistant(Assistant):
         temperature: float = 0.0,
         top_p: float = 0.1,
         max_tokens: int = 4096,
+        context_length: int = 8192,
         seed: int = 0,
         draft_reasoning_effort: str = "medium",
         verifier_reasoning_effort: str = "high",
@@ -78,6 +46,8 @@ class OllamaAssistant(Assistant):
     ) -> None:
         if max_tokens < 1:
             raise ValueError("max_tokens must be positive")
+        if context_length < 1:
+            raise ValueError("context_length must be positive")
         if draft_reasoning_effort not in _REASONING_EFFORTS:
             raise ValueError("unsupported draft_reasoning_effort")
         if verifier_reasoning_effort not in _REASONING_EFFORTS:
@@ -88,6 +58,7 @@ class OllamaAssistant(Assistant):
         self._temperature = temperature
         self._top_p = top_p
         self._max_tokens = max_tokens
+        self._context_length = context_length
         self._seed = seed
         self._draft_reasoning_effort = draft_reasoning_effort
         self._verifier_reasoning_effort = verifier_reasoning_effort
@@ -113,11 +84,11 @@ class OllamaAssistant(Assistant):
             return None
 
         if not rag_context:
-            return draft.answer_html
+            return draft
 
         verifier = build_verifier_payload(
             conversation_id=message.conversation_id,
-            draft=draft.answer_html,
+            draft=draft,
             rag_context=rag_context,
         )
         log_assistant_payload(
@@ -132,11 +103,11 @@ class OllamaAssistant(Assistant):
         )
         if not verified:
             logger.warning(
-                "Verifier returned empty conversation_id=%s; dropping draft",
+                "Verifier returned empty conversation_id=%s; using draft",
                 message.conversation_id,
             )
-            return None
-        return verified.answer_html
+            return draft
+        return verified
 
     def _chat(
         self,
@@ -145,7 +116,7 @@ class OllamaAssistant(Assistant):
         layer: int,
         conversation_id: str,
         rag_context: str,
-    ) -> _GroundedAnswer | None:
+    ) -> str | None:
         ollama_messages: list[dict[str, str]] = [
             {"role": "system", "content": payload["system_prompt"]},
         ]
@@ -169,31 +140,53 @@ class OllamaAssistant(Assistant):
             "top_p": self._top_p,
             "seed": self._seed,
             "max_tokens": self._max_tokens,
-            "response_format": _ANSWER_RESPONSE_FORMAT,
         }
         started_at = time.perf_counter()
         history_chars = sum(
             len(str(item.get("body") or "")) for item in payload["messages"]
         )
-        logger.info(
-            "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
-            "system_chars=%s history_chars=%s rag_chars=%s "
-            "reasoning_effort=%s temperature=%s top_p=%s max_tokens=%s seed=%s",
-            layer,
-            self._model,
-            conversation_id,
-            len(payload["messages"]),
-            len(str(payload["system_prompt"])),
-            history_chars,
-            len(rag_context),
-            reasoning_effort,
-            self._temperature,
-            self._top_p,
-            self._max_tokens,
-            self._seed,
-        )
         try:
             with httpx.Client(timeout=self._timeout) as client:
+                prompt_tokens = _count_prompt_tokens(
+                    client,
+                    base_url=self._base_url,
+                    model=self._model,
+                    messages=ollama_messages,
+                )
+                logger.info(
+                    "Calling Ollama layer=%s model=%s conversation_id=%s messages=%s "
+                    "system_chars=%s history_chars=%s rag_chars=%s "
+                    "prompt_tokens=%s/%s (%s) max_tokens=%s remaining_tokens=%s "
+                    "reasoning_effort=%s temperature=%s top_p=%s seed=%s",
+                    layer,
+                    self._model,
+                    conversation_id,
+                    len(payload["messages"]),
+                    len(str(payload["system_prompt"])),
+                    history_chars,
+                    len(rag_context),
+                    prompt_tokens if prompt_tokens is not None else "unknown",
+                    self._context_length,
+                    _ratio_label(prompt_tokens, self._context_length),
+                    self._max_tokens,
+                    _remaining_tokens(prompt_tokens, self._context_length),
+                    reasoning_effort,
+                    self._temperature,
+                    self._top_p,
+                    self._seed,
+                )
+                if (
+                    prompt_tokens is not None
+                    and prompt_tokens >= self._context_length
+                ):
+                    logger.warning(
+                        "Prompt fills the context window layer=%s conversation_id=%s "
+                        "prompt_tokens=%s context_length=%s",
+                        layer,
+                        conversation_id,
+                        prompt_tokens,
+                        self._context_length,
+                    )
                 response = client.post(
                     f"{self._base_url}/v1/chat/completions",
                     json=request_body,
@@ -246,17 +239,24 @@ class OllamaAssistant(Assistant):
         usage = data.get("usage") if isinstance(data, dict) else None
         if not isinstance(usage, dict):
             usage = {}
+        prompt_tokens = usage.get("prompt_tokens")
+        total_tokens = usage.get("total_tokens")
         logger.info(
             "Ollama layer=%s done conversation_id=%s elapsed=%.3fs "
-            "finish_reason=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s "
+            "finish_reason=%s prompt_tokens=%s/%s (%s) "
+            "completion_tokens=%s total_tokens=%s/%s (%s) "
             "reasoning_chars=%s content_chars=%s",
             layer,
             conversation_id,
             elapsed,
             finish_reason or None,
-            usage.get("prompt_tokens"),
+            prompt_tokens,
+            self._context_length,
+            _ratio_label(prompt_tokens, self._context_length),
             usage.get("completion_tokens"),
-            usage.get("total_tokens"),
+            total_tokens,
+            self._context_length,
+            _ratio_label(total_tokens, self._context_length),
             reasoning_chars,
             len(str(content or "")),
         )
@@ -267,12 +267,57 @@ class OllamaAssistant(Assistant):
                 conversation_id,
             )
             return None
-        return _parse_grounded_answer(
+        return _parse_answer_html(
             content,
-            rag_context=rag_context,
             layer=layer,
             conversation_id=conversation_id,
         )
+
+
+def _count_prompt_tokens(
+    client: httpx.Client,
+    *,
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]],
+) -> int | None:
+    prompt = "\n\n".join(
+        f"{item.get('role', '')}\n{item.get('content', '')}" for item in messages
+    )
+    try:
+        response = client.post(
+            f"{base_url}/api/tokenize",
+            json={"model": model, "content": prompt, "prompt": prompt},
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError):
+        logger.debug("Ollama tokenize failed model=%s; using character estimate", model)
+        return _estimate_tokens(prompt)
+    tokens = data.get("tokens") if isinstance(data, dict) else None
+    if isinstance(tokens, list):
+        return len(tokens)
+    count = data.get("count") if isinstance(data, dict) else None
+    if isinstance(count, int) and count >= 0:
+        return count
+    return _estimate_tokens(prompt)
+
+
+def _estimate_tokens(text: str) -> int:
+    # Cyrillic and mixed HTML usually take more tokens than English (~3 chars).
+    return max(1, (len(text) + 2) // 3)
+
+
+def _ratio_label(used: object, total: int) -> str:
+    if not isinstance(used, int) or total <= 0:
+        return "unknown"
+    return f"{100.0 * used / total:.1f}%"
+
+
+def _remaining_tokens(used: object, total: int) -> str:
+    if not isinstance(used, int):
+        return "unknown"
+    return str(max(0, total - used))
 
 
 def _first_choice(data: object) -> dict | None:
@@ -293,71 +338,39 @@ def _reasoning_chars(message: dict) -> int:
     return 0
 
 
-def _parse_grounded_answer(
+def _parse_answer_html(
     content: str,
     *,
-    rag_context: str,
     layer: int,
     conversation_id: str,
-) -> _GroundedAnswer | None:
+) -> str | None:
+    stripped = content.strip()
     try:
-        raw = json.loads(content)
+        raw = json.loads(stripped)
     except (json.JSONDecodeError, TypeError):
-        logger.warning(
-            "Ollama invalid structured content layer=%s conversation_id=%s",
-            layer,
-            conversation_id,
-        )
-        return None
-    if not isinstance(raw, dict) or set(raw) != {"evidence", "answer_html"}:
-        return None
+        raw = None
+    if isinstance(raw, dict):
+        answer_html = raw.get("answer_html")
+        if isinstance(answer_html, str) and answer_html.strip():
+            stripped = answer_html.strip()
+        elif isinstance(raw.get("content"), str) and str(raw["content"]).strip():
+            stripped = str(raw["content"]).strip()
+        else:
+            logger.warning(
+                "Ollama structured content has no answer_html layer=%s "
+                "conversation_id=%s",
+                layer,
+                conversation_id,
+            )
+            return None
+    elif isinstance(raw, str) and raw.strip():
+        stripped = raw.strip()
 
-    answer_html = raw.get("answer_html")
-    evidence_raw = raw.get("evidence")
-    if not isinstance(answer_html, str) or not answer_html.strip():
-        return None
-    answer_html = answer_html.strip()
-    if _INTERNAL_REASONING_PREFIX.match(answer_html):
+    if _INTERNAL_REASONING_PREFIX.match(stripped):
         logger.warning(
             "Ollama leaked internal reasoning layer=%s conversation_id=%s",
             layer,
             conversation_id,
         )
         return None
-    if not isinstance(evidence_raw, list):
-        return None
-
-    quotes: list[str] = []
-    for item in evidence_raw:
-        if not isinstance(item, dict) or set(item) != {"quote"}:
-            return None
-        quote = item.get("quote")
-        if not isinstance(quote, str) or not quote.strip():
-            return None
-        quotes.append(quote.strip())
-
-    if rag_context:
-        if not quotes:
-            logger.warning(
-                "Ollama returned no evidence layer=%s conversation_id=%s",
-                layer,
-                conversation_id,
-            )
-            return None
-        normalized_context = _normalize_quote(rag_context)
-        for quote in quotes:
-            if _normalize_quote(quote) not in normalized_context:
-                logger.warning(
-                    "Ollama evidence not found in RAG layer=%s conversation_id=%s "
-                    "quote_chars=%s",
-                    layer,
-                    conversation_id,
-                    len(quote),
-                )
-                return None
-
-    return _GroundedAnswer(answer_html=answer_html, evidence=tuple(quotes))
-
-
-def _normalize_quote(value: str) -> str:
-    return " ".join(value.split())
+    return stripped

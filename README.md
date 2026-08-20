@@ -165,13 +165,12 @@ Instruct/Query/Document → числовой score `0.00..1.00`), дополня
 на исходные vector scores.
 
 Ответ пользователю строится в два слоя одной `OLLAMA_MODEL`: сначала черновик,
-затем проверка по тем же чанкам. В скрытом reasoning модель сначала дословно
-извлекает цитаты, затем возвращает JSON с `evidence` и `answer_html`. Код
-проверяет наличие каждой цитаты в RAG, отправляет только HTML без reasoning,
-Markdown, URL и сносок `[1]`, а в конец добавляет имена документов.
+затем второй проход по тем же чанкам правит явные ошибки и не отбрасывает
+ответ из‑за цитат. В письмо уходит HTML без reasoning, Markdown, URL и сносок
+`[1]`; в конец добавляются имена документов.
 
 Параметры генерации: `OLLAMA_TEMPERATURE=0`, `OLLAMA_TOP_P=0.1`,
-`OLLAMA_MAX_TOKENS=4096`, `OLLAMA_SEED=0`,
+`OLLAMA_MAX_TOKENS=4096`, `OLLAMA_CONTEXT_LENGTH=8192`, `OLLAMA_SEED=0`,
 `OLLAMA_DRAFT_REASONING_EFFORT=medium`,
 `OLLAMA_VERIFIER_REASONING_EFFORT=high`, `OLLAMA_TIMEOUT_SEC=420`.
 
@@ -188,8 +187,9 @@ Markdown, URL и сносок `[1]`, а в конец добавляет име�
 ```
 
 В Ollama уходит `POST /v1/chat/completions` с `stream=false`, `messages`:
-`system` + история `user`/`assistant` (`body` → `content`), фиксированным seed,
-`reasoning_effort` и строгой JSON Schema в `response_format`.
+`system` + история `user`/`assistant` (`body` → `content`), фиксированным seed
+и `reasoning_effort`. Content — HTML-ответ, без JSON Schema и без проверки
+дословных цитат.
 Дополнительные инструкции можно задать через `AI_SYSTEM_PROMPT` (контракт формата
 ответа всё равно добавляется). Модель с Qdrant напрямую не общается — retrieval
 делает `mail_gateway`.

@@ -101,8 +101,8 @@ def test_rag_context_appended_to_system_prompt() -> None:
 
 def test_default_system_prompt_requires_grounded_formal_answers() -> None:
     assert "Не выдумывай" in DEFAULT_SYSTEM_PROMPT
-    assert "reasoning" in DEFAULT_SYSTEM_PROMPT
-    assert "дословной непрерывной цитатой" in DEFAULT_SYSTEM_PROMPT
+    assert "HTML-ответ" in DEFAULT_SYSTEM_PROMPT
+    assert "дословной непрерывной цитатой" not in DEFAULT_SYSTEM_PROMPT
     assert "без Markdown" in DEFAULT_SYSTEM_PROMPT
     assert "K0" not in DEFAULT_SYSTEM_PROMPT
     assert "K1" not in DEFAULT_SYSTEM_PROMPT
@@ -120,7 +120,8 @@ def test_verifier_payload_includes_draft_and_same_chunks() -> None:
     assert "Точное условие из документа" in payload["system_prompt"]
     assert payload["messages"][0]["role"] == "user"
     assert "изменённым условием" in payload["messages"][0]["body"]
-    assert "дословные непрерывные цитаты" in VERIFIER_SYSTEM_PROMPT
+    assert "сохрани полезное из черновика" in VERIFIER_SYSTEM_PROMPT
+    assert "дословные непрерывные цитаты" not in VERIFIER_SYSTEM_PROMPT
     assert "K0" not in VERIFIER_SYSTEM_PROMPT
     assert "K1" not in VERIFIER_SYSTEM_PROMPT
 

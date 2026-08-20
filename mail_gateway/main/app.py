@@ -118,6 +118,7 @@ def run(settings: Settings | None = None) -> None:
         temperature=settings.ollama_temperature,
         top_p=settings.ollama_top_p,
         max_tokens=settings.ollama_max_tokens,
+        context_length=settings.ollama_context_length,
         seed=settings.ollama_seed,
         draft_reasoning_effort=settings.ollama_draft_reasoning_effort,
         verifier_reasoning_effort=settings.ollama_verifier_reasoning_effort,
