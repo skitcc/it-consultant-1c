@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     ollama_draft_reasoning_effort: Literal["low", "medium", "high", "max", "none"] = (
         Field(default="medium", alias="OLLAMA_DRAFT_REASONING_EFFORT")
     )
+    ollama_verifier_enabled: bool = Field(
+        default=False,
+        alias="OLLAMA_VERIFIER_ENABLED",
+    )
     ollama_verifier_reasoning_effort: Literal[
         "low", "medium", "high", "max", "none"
     ] = Field(default="high", alias="OLLAMA_VERIFIER_REASONING_EFFORT")

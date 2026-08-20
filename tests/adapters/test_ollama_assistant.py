@@ -106,6 +106,7 @@ def test_ollama_assistant_uses_openai_api_and_two_reasoning_levels(
         max_tokens=4096,
         seed=0,
         draft_reasoning_effort="medium",
+        verifier_enabled=True,
         verifier_reasoning_effort="high",
     )
     answer = assistant.ask(_message(rag=rag))
@@ -137,8 +138,22 @@ def test_ollama_assistant_skips_verifier_without_rag(monkeypatch) -> None:
         [_completion("<p>plain</p>")],
     )
 
-    answer = OllamaAssistant(model="gpt-oss:120b").ask(_message())
+    answer = OllamaAssistant(model="gpt-oss:120b", verifier_enabled=True).ask(
+        _message()
+    )
     assert answer == "<p>plain</p>"
+    assert len([item for item in seen if item["url"].endswith("/v1/chat/completions")]) == 1
+
+
+def test_ollama_assistant_skips_verifier_when_disabled(monkeypatch) -> None:
+    rag = "Документ: guide.pdf\nТочный факт из документа."
+    seen = _install_fake_client(
+        monkeypatch,
+        [_completion("<p>Черновик</p>")],
+    )
+
+    answer = OllamaAssistant(model="gpt-oss:120b").ask(_message(rag=rag))
+    assert answer == "<p>Черновик</p>"
     assert len([item for item in seen if item["url"].endswith("/v1/chat/completions")]) == 1
 
 
@@ -152,7 +167,7 @@ def test_ollama_assistant_keeps_draft_when_verifier_is_empty(monkeypatch) -> Non
         ],
     )
 
-    answer = OllamaAssistant(model="m").ask(_message(rag=rag))
+    answer = OllamaAssistant(model="m", verifier_enabled=True).ask(_message(rag=rag))
     assert answer == "<p>Черновик</p>"
 
 
@@ -176,7 +191,10 @@ def test_ollama_assistant_accepts_legacy_json_answer_html(monkeypatch) -> None:
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
     _install_fake_client(monkeypatch, [payload, payload])
-    assert OllamaAssistant(model="m").ask(_message(rag=rag)) == "<p>Ответ</p>"
+    assert (
+        OllamaAssistant(model="m", verifier_enabled=True).ask(_message(rag=rag))
+        == "<p>Ответ</p>"
+    )
 
 
 def test_ollama_assistant_rejects_reasoning_leaked_into_answer(monkeypatch) -> None:

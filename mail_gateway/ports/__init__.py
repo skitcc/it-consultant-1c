@@ -54,7 +54,7 @@ class Assistant(Protocol):
 
         ``message.messages`` holds the full thread to send to the model.
         ``message.rag_context`` may hold retrieved documentation snippets.
-        When documentation is present the adapter drafts an answer, then
-        verifies it against the same chunks before returning.
+        When documentation is present the adapter drafts an answer. A second
+        verification pass runs only when the verifier is enabled.
         """
         ...

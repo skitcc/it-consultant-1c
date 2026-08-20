@@ -41,6 +41,7 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.ollama_context_length == 8192
     assert settings.ollama_seed == 0
     assert settings.ollama_draft_reasoning_effort == "medium"
+    assert settings.ollama_verifier_enabled is False
     assert settings.ollama_verifier_reasoning_effort == "high"
     assert settings.watch_path == "/var/db"
     assert settings.debounce_seconds == 1.5

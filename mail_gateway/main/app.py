@@ -121,6 +121,7 @@ def run(settings: Settings | None = None) -> None:
         context_length=settings.ollama_context_length,
         seed=settings.ollama_seed,
         draft_reasoning_effort=settings.ollama_draft_reasoning_effort,
+        verifier_enabled=settings.ollama_verifier_enabled,
         verifier_reasoning_effort=settings.ollama_verifier_reasoning_effort,
         system_prompt=settings.ai_system_prompt,
     )
@@ -134,7 +135,7 @@ def run(settings: Settings | None = None) -> None:
 
     logger.info(
         "Mail gateway started mailbox=%s ollama=%s model=%s qdrant=%s "
-        "collection=%s rag_candidates=%s rag_top_k=%s rerank=%s",
+        "collection=%s rag_candidates=%s rag_top_k=%s rerank=%s verifier=%s",
         settings.ews_email,
         settings.ollama_base_url,
         settings.ollama_model,
@@ -143,6 +144,7 @@ def run(settings: Settings | None = None) -> None:
         settings.rag_candidates,
         settings.rag_top_k,
         settings.rerank_enabled,
+        settings.ollama_verifier_enabled,
     )
 
     while True:

@@ -27,7 +27,7 @@ _INTERNAL_REASONING_PREFIX = re.compile(
 
 
 class OllamaAssistant(Assistant):
-    """Two-layer chat: draft, then a second pass over the same chunks."""
+    """Draft chat, with an optional second pass over the same chunks."""
 
     def __init__(
         self,
@@ -41,6 +41,7 @@ class OllamaAssistant(Assistant):
         context_length: int = 8192,
         seed: int = 0,
         draft_reasoning_effort: str = "medium",
+        verifier_enabled: bool = False,
         verifier_reasoning_effort: str = "high",
         system_prompt: str | None = None,
     ) -> None:
@@ -61,6 +62,7 @@ class OllamaAssistant(Assistant):
         self._context_length = context_length
         self._seed = seed
         self._draft_reasoning_effort = draft_reasoning_effort
+        self._verifier_enabled = verifier_enabled
         self._verifier_reasoning_effort = verifier_reasoning_effort
         self._system_prompt = system_prompt
 
@@ -83,7 +85,7 @@ class OllamaAssistant(Assistant):
         if not draft:
             return None
 
-        if not rag_context:
+        if not rag_context or not self._verifier_enabled:
             return draft
 
         verifier = build_verifier_payload(
