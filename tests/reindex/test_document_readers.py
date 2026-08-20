@@ -10,6 +10,7 @@ from reindex.adapters.document_readers import (
     TextDocumentReader,
     chat_completions_url,
     format_picture_block,
+    merge_split_table_chunks,
     picture_pipeline_flags,
     split_oversized_text,
 )
@@ -256,7 +257,7 @@ def test_split_oversized_text_splits_paragraphs() -> None:
     assert part_b in pieces[1]
 
 
-def test_split_oversized_text_keeps_table_rows_and_repeats_header() -> None:
+def test_split_oversized_text_keeps_whole_table_as_one_chunk() -> None:
     table = (
         "| Этап | Условие |\n"
         "|------|---------|\n"
@@ -269,12 +270,199 @@ def test_split_oversized_text_keeps_table_rows_and_repeats_header() -> None:
         max_tokens=20,
         tokenizer=_CountingTokenizer(),
     )
-    assert len(pieces) >= 2
-    joined = "\n".join(pieces)
-    assert "K0-2 | PM готов покупать по K0" in joined
-    assert all("| Этап | Условие |" in piece for piece in pieces)
-    for piece in pieces:
-        assert "K0-2" not in piece or "покупать по K1" not in piece
+    assert pieces == [table]
+    assert "K0-2 | PM готов покупать по K0" in pieces[0]
+    assert "K1 | после K0-2" in pieces[0]
+
+
+def test_split_oversized_text_extracts_table_from_surrounding_prose() -> None:
+    table = (
+        "| Этап | Условие |\n"
+        "|------|---------|\n"
+        "| K0-2 | PM готов покупать по K0 |\n"
+        "| K1 | после K0-2 |"
+    )
+    text = f"{'a' * 40}\n\n{table}\n\n{'b' * 40}"
+    pieces = split_oversized_text(
+        text,
+        max_tokens=12,
+        tokenizer=_CountingTokenizer(),
+    )
+    assert len(pieces) == 3
+    assert pieces[0] == "a" * 40
+    assert pieces[1] == table
+    assert pieces[2] == "b" * 40
+
+
+def test_split_oversized_text_keeps_html_table_as_one_chunk() -> None:
+    table = (
+        "<table><thead><tr><th>Этап</th><th>Условие</th></tr></thead>"
+        "<tbody><tr><td>K0-2</td><td>PM готов покупать по K0</td></tr>"
+        "<tr><td>K1</td><td>после K0-2</td></tr></tbody></table>"
+    )
+    pieces = split_oversized_text(
+        f"{'a' * 40}\n\n{table}\n\n{'b' * 40}",
+        max_tokens=12,
+        tokenizer=_CountingTokenizer(),
+    )
+    assert pieces[1] == table
+    assert "K0-2" in pieces[1] and "K1" in pieces[1]
+
+
+def test_merge_split_table_chunks_joins_repeated_header_fragments() -> None:
+    headings = ("Критерии перехода",)
+    first = DocumentChunk(
+        text=(
+            "| Этап | Условие |\n"
+            "|------|---------|\n"
+            "| Intern 1 | адаптация |"
+        ),
+        headings=headings,
+    )
+    echo = DocumentChunk(text="Критерии перехода", headings=headings)
+    second = DocumentChunk(
+        text=(
+            "| Этап | Условие |\n"
+            "|------|---------|\n"
+            "| K0-2 | PM готов покупать по K0 |\n"
+            "| K1 | после K0-2 |"
+        ),
+        headings=headings,
+    )
+
+    merged = merge_split_table_chunks([first, echo, second])
+    assert len(merged) == 1
+    assert "Intern 1 | адаптация" in merged[0].text
+    assert "K0-2 | PM готов покупать по K0" in merged[0].text
+    assert "K1 | после K0-2" in merged[0].text
+    assert merged[0].text.count("| Этап | Условие |") == 1
+
+
+def test_merge_split_table_chunks_keeps_different_tables_apart() -> None:
+    headings = ("Раздел",)
+    first = DocumentChunk(
+        text="| Этап | Условие |\n|------|---------|\n| K0 | адаптация |",
+        headings=headings,
+    )
+    second = DocumentChunk(
+        text="| Роль | Требование |\n|------|------------|\n| PM | покупает |",
+        headings=headings,
+    )
+    merged = merge_split_table_chunks([first, second])
+    assert [chunk.text for chunk in merged] == [first.text, second.text]
+
+
+def test_merge_split_table_chunks_does_not_extend_atomic_table() -> None:
+    headings = ("Раздел",)
+    full = DocumentChunk(
+        text="| Этап | Условие |\n|------|---------|\n| K0 | адаптация |\n| K1 | переход |",
+        headings=headings,
+        atomic=True,
+    )
+    fragment = DocumentChunk(
+        text="| Этап | Условие |\n|------|---------|\n| K1 | переход |",
+        headings=headings,
+    )
+    merged = merge_split_table_chunks([full, fragment])
+    assert merged[0] is full
+    assert merged[1].text == fragment.text
+
+
+def test_docling_reader_renders_full_table_item_once(tmp_path: Path) -> None:
+    path = tmp_path / "grades.pptx"
+    path.write_bytes(b"PK")
+
+    full_table = (
+        "| Этап | Условие |\n"
+        "|------|---------|\n"
+        "| Intern 1 | адаптация |\n"
+        "| K0-2 | PM готов покупать по K0 |\n"
+        "| K1 | после K0-2 |"
+    )
+    table = MagicMock()
+    table.self_ref = "#/tables/0"
+    table.export_to_markdown.return_value = full_table
+    table.data.grid = []
+
+    first = MagicMock()
+    first.meta.headings = ["Критерии"]
+    first.meta.doc_items = [table]
+    second = MagicMock()
+    second.meta.headings = ["Критерии"]
+    second.meta.doc_items = [table]
+    result = MagicMock()
+    result.document = object()
+    converter = MagicMock()
+    converter.convert.return_value = result
+    chunker = MagicMock()
+    chunker.chunk.return_value = [first, second]
+    chunker.contextualize.side_effect = [
+        "| Этап | Условие |\n|------|---------|\n| Intern 1 | адаптация |",
+        "| Этап | Условие |\n|------|---------|\n| K1 | после K0-2 |",
+    ]
+    chunker.serializer_provider = None
+
+    chunks = DoclingDocumentReader(
+        converter=converter,
+        chunker=chunker,
+        max_tokens=8,
+    ).read(path)
+
+    tables = [chunk for chunk in chunks if chunk.atomic]
+    assert len(tables) == 1
+    assert tables[0].text == full_table
+    assert "Intern 1 | адаптация" in tables[0].text
+    assert "K1 | после K0-2" in tables[0].text
+    assert tables[0].headings == ("Критерии",)
+
+
+def test_docling_reader_renders_table_from_grid_without_size_limit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sheet.xlsx"
+    path.write_bytes(b"PK")
+
+    class _Cell:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _Table:
+        self_ref = "#/tables/3"
+        data = type(
+            "Data",
+            (),
+            {
+                "grid": [
+                    [_Cell("Этап"), _Cell("Условие")],
+                    [_Cell("K0-2"), _Cell("PM готов покупать по K0")],
+                    [_Cell("K1"), _Cell("после K0-2")],
+                ]
+            },
+        )()
+
+    raw = MagicMock()
+    raw.meta.headings = ["Лист"]
+    raw.meta.doc_items = [_Table()]
+    result = MagicMock()
+    result.document = object()
+    converter = MagicMock()
+    converter.convert.return_value = result
+    chunker = MagicMock()
+    chunker.chunk.return_value = [raw]
+    chunker.contextualize.return_value = "should not be used"
+    chunker.serializer_provider = None
+
+    chunks = DoclingDocumentReader(
+        converter=converter,
+        chunker=chunker,
+        max_tokens=4,
+    ).read(path)
+
+    assert len(chunks) == 1
+    assert chunks[0].atomic is True
+    assert chunks[0].text.startswith("| Этап | Условие |")
+    assert "K0-2" in chunks[0].text
+    assert "K1" in chunks[0].text
 
 
 def test_vlm_http_logging_records_chat_completions(monkeypatch, caplog) -> None:

@@ -11,3 +11,4 @@ class DocumentChunk:
 
     text: str
     headings: tuple[str, ...] = ()
+    atomic: bool = False

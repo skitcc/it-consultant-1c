@@ -211,7 +211,8 @@ embeddings → upsert.
 Поддерживаемые типы: `.txt`, `.md`, `.markdown`, `.rst`, `.log`, `.csv`, `.pdf`,
 `.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm` (`pip install -e ".[reindex]"`).
 Ридер возвращает семантические чанки Docling (`HybridChunker` + `contextualize`),
-с заголовками секций и таблицами в Markdown. OCR для PDF выключен.
+с заголовками секций. Каждая таблица Docling (`TableItem`) сериализуется целиком
+в Markdown и кладётся одним чанком без лимита `CHUNK_SIZE`. OCR для PDF выключен.
 
 Картинки не гоняются через VLM-pipeline на всю страницу. Это **enrichment**:
 обычный convert, затем Ollama VLM (`VLM_MODEL` на том же `OLLAMA_BASE_URL`)
@@ -267,7 +268,7 @@ tests/reindex/
 | `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
 | `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama `POST /api/chat` (score `0..1`) | `true` / `dengcao/Qwen3-Reranker-8B:Q8_0` |
 | `RERANK_NUM_PREDICT` | Лимит генерации reranker с учётом thinking; при исчерпании выполняется короткий retry без thinking | `256` |
-| `CHUNK_SIZE` | Max tokens для HybridChunker (слишком большие таблицы режутся дальше) | `1024` |
+| `CHUNK_SIZE` | Max tokens для прозы в HybridChunker; таблицы Docling без лимита | `1024` |
 | `PICTURE_DESCRIPTION_ENABLED` | VLM-описания картинок (enrichment) | `true` |
 | `VLM_MODEL` | Vision-модель в том же Ollama | `qwen3-vl:8b` |
 | `VLM_TIMEOUT_SEC` | Таймаут описания одной картинки | `90` |

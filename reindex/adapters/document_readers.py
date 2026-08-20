@@ -130,33 +130,16 @@ class DoclingDocumentReader:
         )
 
         started = time.perf_counter()
-        chunks: list[DocumentChunk] = []
-        raw_count = 0
-        for raw in chunker.chunk(dl_doc=document):
-            raw_count += 1
-            text = str(chunker.contextualize(raw)).strip()
-            if not text:
-                continue
-            headings = _headings_from_chunk(raw)
-            pieces = split_oversized_text(
-                text,
-                max_tokens=self._max_tokens,
-                tokenizer=self._tokenizer,
-            )
-            if len(pieces) > 1:
-                logger.debug(
-                    "Split oversized chunk path=%s headings=%s pieces=%s chars=%s",
-                    path.name,
-                    " / ".join(headings) if headings else "-",
-                    len(pieces),
-                    len(text),
-                )
-            for piece in pieces:
-                chunks.append(DocumentChunk(text=piece, headings=headings))
+        chunks = _chunk_document(
+            document,
+            chunker=chunker,
+            max_tokens=self._max_tokens,
+            tokenizer=self._tokenizer,
+            path_name=path.name,
+        )
         logger.info(
-            "Chunked path=%s raw=%s stored=%s elapsed=%.2fs",
+            "Chunked path=%s stored=%s elapsed=%.2fs",
             path.name,
-            raw_count,
             len(chunks),
             time.perf_counter() - started,
         )
@@ -387,7 +370,7 @@ def _chunking_serializer_provider() -> Any | None:
             kwargs: dict[str, Any] = {
                 "doc": doc,
                 "table_serializer": MarkdownTableSerializer(),
-                "params": MarkdownParams(compact_tables=True),
+                "params": MarkdownParams(compact_tables=False),
             }
             try:
                 return ChunkingDocSerializer(
@@ -615,8 +598,273 @@ def _iter_pictures(document: Any) -> list[Any]:
         return []
 
 
+def _chunk_document(
+    document: Any,
+    *,
+    chunker: Any,
+    max_tokens: int,
+    tokenizer: Any | None,
+    path_name: str,
+) -> list[DocumentChunk]:
+    """HybridChunker for prose; each Docling TableItem becomes one unbounded MD chunk."""
+    serializer = _document_serializer(chunker, document)
+    emitted_tables: set[str] = set()
+    chunks: list[DocumentChunk] = []
+    raw_count = 0
+    for raw in chunker.chunk(dl_doc=document):
+        raw_count += 1
+        headings = _headings_from_chunk(raw)
+        table_items = _table_items_from_chunk(raw)
+        other_items = _non_table_items_from_chunk(raw)
+        emitted_table = False
+        for table in table_items:
+            ref = _table_ref(table)
+            if ref in emitted_tables:
+                continue
+            markdown = _render_full_table_markdown(
+                table,
+                document=document,
+                serializer=serializer,
+            )
+            if not markdown:
+                logger.warning(
+                    "Docling table rendered empty path=%s ref=%s",
+                    path_name,
+                    ref,
+                )
+                continue
+            emitted_tables.add(ref)
+            emitted_table = True
+            logger.info(
+                "Table chunk path=%s ref=%s chars=%s unbounded=true",
+                path_name,
+                ref,
+                len(markdown),
+            )
+            chunks.append(
+                DocumentChunk(text=markdown, headings=headings, atomic=True)
+            )
+
+        if emitted_table and not other_items:
+            continue
+        if emitted_table and other_items:
+            prose = _serialize_items(
+                other_items,
+                document=document,
+                serializer=serializer,
+            )
+            if not prose:
+                contextualized = str(chunker.contextualize(raw)).strip()
+                prose = _prose_without_tables(contextualized)
+            for piece in split_oversized_text(
+                prose,
+                max_tokens=max_tokens,
+                tokenizer=tokenizer,
+            ):
+                chunks.append(DocumentChunk(text=piece, headings=headings))
+            continue
+
+        text = str(chunker.contextualize(raw)).strip()
+        if not text:
+            continue
+        pieces = split_oversized_text(
+            text,
+            max_tokens=max_tokens,
+            tokenizer=tokenizer,
+        )
+        if len(pieces) > 1:
+            logger.debug(
+                "Split oversized chunk path=%s headings=%s pieces=%s chars=%s",
+                path_name,
+                " / ".join(headings) if headings else "-",
+                len(pieces),
+                len(text),
+            )
+        for piece in pieces:
+            chunks.append(DocumentChunk(text=piece, headings=headings))
+    logger.debug("HybridChunker raw chunks path=%s raw=%s", path_name, raw_count)
+    return merge_split_table_chunks(chunks)
+
+
+def _document_serializer(chunker: Any, document: Any) -> Any | None:
+    provider = getattr(chunker, "serializer_provider", None)
+    getter = getattr(provider, "get_serializer", None) if provider is not None else None
+    if callable(getter):
+        try:
+            serializer = getter(document)
+        except TypeError:
+            try:
+                serializer = getter(doc=document)
+            except Exception:
+                serializer = None
+        except Exception:
+            serializer = None
+        if serializer is not None:
+            return serializer
+    return _make_markdown_serializer(document)
+
+
+def _make_markdown_serializer(document: Any) -> Any | None:
+    provider = _chunking_serializer_provider()
+    getter = getattr(provider, "get_serializer", None) if provider is not None else None
+    if not callable(getter):
+        return None
+    try:
+        return getter(document)
+    except TypeError:
+        try:
+            return getter(doc=document)
+        except Exception:
+            return None
+    except Exception:
+        logger.debug("Cannot build Docling markdown serializer", exc_info=True)
+        return None
+
+
+def _table_items_from_chunk(chunk: Any) -> list[Any]:
+    return [item for item in _doc_items(chunk) if _is_table_item(item)]
+
+
+def _non_table_items_from_chunk(chunk: Any) -> list[Any]:
+    return [item for item in _doc_items(chunk) if not _is_table_item(item)]
+
+
+def _doc_items(chunk: Any) -> list[Any]:
+    meta = getattr(chunk, "meta", None)
+    items = getattr(meta, "doc_items", None) if meta is not None else None
+    if items is None:
+        return []
+    try:
+        len(items)
+    except TypeError:
+        return []
+    try:
+        return list(items)
+    except TypeError:
+        return []
+
+
+def _is_table_item(item: Any) -> bool:
+    if item is None:
+        return False
+    if type(item).__name__ == "TableItem":
+        return True
+    label = getattr(item, "label", None)
+    if label is not None:
+        value = getattr(label, "value", label)
+        if str(value).lower() == "table":
+            return True
+    ref = str(getattr(item, "self_ref", "") or "")
+    return "#/tables/" in ref or "/tables/" in ref
+
+
+def _table_ref(table: Any) -> str:
+    ref = getattr(table, "self_ref", None)
+    if ref:
+        return str(ref)
+    return f"id:{id(table)}"
+
+
+def _render_full_table_markdown(
+    table: Any,
+    *,
+    document: Any,
+    serializer: Any | None,
+) -> str:
+    if serializer is not None:
+        text = _text_from_serialize(serializer, table)
+        if text:
+            return text
+    export = getattr(table, "export_to_markdown", None)
+    if callable(export):
+        for kwargs in ({"doc": document}, {}):
+            try:
+                rendered = export(**kwargs) if kwargs else export()
+            except TypeError:
+                continue
+            except Exception:
+                logger.debug("table.export_to_markdown failed", exc_info=True)
+                break
+            if isinstance(rendered, str) and rendered.strip():
+                return rendered.strip()
+    return _markdown_from_table_grid(table)
+
+
+def _text_from_serialize(serializer: Any, item: Any) -> str:
+    serialize = getattr(serializer, "serialize", None)
+    if not callable(serialize):
+        return ""
+    try:
+        result = serialize(item=item)
+    except TypeError:
+        try:
+            result = serialize(item)
+        except Exception:
+            return ""
+    except Exception:
+        logger.debug("Docling serialize failed", exc_info=True)
+        return ""
+    text = getattr(result, "text", result)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return ""
+
+
+def _serialize_items(
+    items: list[Any],
+    *,
+    document: Any,
+    serializer: Any | None,
+) -> str:
+    del document
+    if serializer is None:
+        return ""
+    parts: list[str] = []
+    for item in items:
+        text = _text_from_serialize(serializer, item)
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _prose_without_tables(text: str) -> str:
+    return "\n\n".join(
+        block for kind, block in _iter_content_blocks(text) if kind == "prose"
+    )
+
+
+def _markdown_from_table_grid(table: Any) -> str:
+    data = getattr(table, "data", None)
+    grid = getattr(data, "grid", None)
+    if not grid:
+        return ""
+    rows: list[list[str]] = []
+    for row in grid:
+        cells: list[str] = []
+        for cell in row:
+            value = getattr(cell, "text", cell)
+            text = "" if value is None else str(value)
+            cells.append(text.replace("\n", " ").replace("|", "\\|"))
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    normalized = [row + [""] * (width - len(row)) for row in rows]
+    header = normalized[0]
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
+    ]
+    for row in normalized[1:]:
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+_HTML_TABLE_RE = re.compile(r"<table\b.*?</table>", re.IGNORECASE | re.DOTALL)
+_HEADING_MARKDOWN_RE = re.compile(r"^#{1,6}\s+")
 
 
 def split_oversized_text(
@@ -625,22 +873,221 @@ def split_oversized_text(
     max_tokens: int,
     tokenizer: Any | None = None,
 ) -> list[str]:
-    """Split HybridChunker output that still exceeds ``max_tokens`` (wide tables)."""
+    """Split prose that exceeds ``max_tokens``. Tables stay one piece each."""
     stripped = text.strip()
     if not stripped:
         return []
     if max_tokens <= 0:
         raise ValueError("max_tokens must be positive")
-    if _token_count(stripped, tokenizer) <= max_tokens:
-        return [stripped]
 
-    if _looks_like_markdown_table(stripped):
-        return _split_markdown_table(stripped, max_tokens=max_tokens, tokenizer=tokenizer)
+    pieces: list[str] = []
+    for kind, block in _iter_content_blocks(stripped):
+        if kind == "table":
+            tokens = _token_count(block, tokenizer)
+            if tokens > max_tokens:
+                logger.warning(
+                    "Keeping oversized table as one chunk tokens=%s max_tokens=%s chars=%s",
+                    tokens,
+                    max_tokens,
+                    len(block),
+                )
+            pieces.append(block)
+            continue
+        if _token_count(block, tokenizer) <= max_tokens:
+            pieces.append(block)
+            continue
+        pieces.extend(
+            _split_prose(block, max_tokens=max_tokens, tokenizer=tokenizer)
+        )
+    return pieces
 
-    separator = "\n\n" if "\n\n" in stripped else "\n"
-    parts = [part.strip() for part in stripped.split(separator) if part.strip()]
+
+def merge_split_table_chunks(chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+    """Join HybridChunker table fragments that repeat the same header."""
+    if len(chunks) < 2:
+        return chunks
+
+    merged: list[DocumentChunk] = []
+    index = 0
+    while index < len(chunks):
+        chunk = chunks[index]
+        if not _is_pure_table(chunk.text) or chunk.atomic:
+            merged.append(chunk)
+            index += 1
+            continue
+
+        acc = chunk
+        cursor = index + 1
+        skipped: list[DocumentChunk] = []
+        while cursor < len(chunks):
+            nxt = chunks[cursor]
+            if _is_heading_echo(nxt.text, acc.headings):
+                skipped.append(nxt)
+                cursor += 1
+                continue
+            if (
+                not nxt.atomic
+                and nxt.headings == acc.headings
+                and _is_pure_table(nxt.text)
+            ):
+                joined = _join_table_text(acc.text, nxt.text)
+                if joined is not None:
+                    acc = DocumentChunk(text=joined, headings=acc.headings)
+                    skipped.clear()
+                    cursor += 1
+                    continue
+            break
+        merged.append(acc)
+        merged.extend(skipped)
+        index = cursor
+    return merged
+
+
+def _iter_content_blocks(text: str) -> list[tuple[str, str]]:
+    spans = _table_spans(text)
+    if not spans:
+        return [("prose", text.strip())] if text.strip() else []
+
+    blocks: list[tuple[str, str]] = []
+    cursor = 0
+    for start, end in spans:
+        if start > cursor:
+            prose = text[cursor:start].strip()
+            if prose:
+                blocks.append(("prose", prose))
+        table = text[start:end].strip()
+        if table:
+            blocks.append(("table", table))
+        cursor = end
+    if cursor < len(text):
+        prose = text[cursor:].strip()
+        if prose:
+            blocks.append(("prose", prose))
+    return blocks
+
+
+def _table_spans(text: str) -> list[tuple[int, int]]:
+    html_spans = [(match.start(), match.end()) for match in _HTML_TABLE_RE.finditer(text)]
+    spans = list(html_spans)
+    for start, end in _markdown_table_spans(text):
+        if any(start < html_end and end > html_start for html_start, html_end in html_spans):
+            continue
+        spans.append((start, end))
+    spans.sort()
+    return spans
+
+
+def _markdown_table_spans(text: str) -> list[tuple[int, int]]:
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return []
+    stripped = [line.strip() for line in lines]
+    starts: list[int] = []
+    offset = 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(lines):
+        if not _is_markdown_table_start(stripped, index):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines):
+            current = stripped[end]
+            if not current:
+                break
+            if _is_table_row(current) or _is_table_sep(current):
+                end += 1
+                continue
+            break
+        last = end - 1
+        spans.append((starts[index], starts[last] + len(lines[last])))
+        index = end
+    return spans
+
+
+def _is_markdown_table_start(stripped_lines: list[str], index: int) -> bool:
+    if index >= len(stripped_lines) or not _is_table_row(stripped_lines[index]):
+        return False
+    if index + 1 >= len(stripped_lines):
+        return False
+    nxt = stripped_lines[index + 1]
+    return _is_table_sep(nxt) or _is_table_row(nxt)
+
+
+def _is_pure_table(text: str) -> bool:
+    blocks = _iter_content_blocks(text)
+    return len(blocks) == 1 and blocks[0][0] == "table"
+
+
+def _is_heading_echo(text: str, headings: tuple[str, ...]) -> bool:
+    if not headings or _is_pure_table(text):
+        return False
+    leftover = text
+    for heading in headings:
+        leftover = leftover.replace(heading, "\n")
+    leftover = _HEADING_MARKDOWN_RE.sub("", leftover)
+    return not leftover.strip()
+
+
+def _join_table_text(first: str, second: str) -> str | None:
+    parsed_first = _parse_pipe_table(first)
+    parsed_second = _parse_pipe_table(second)
+    if parsed_first is None or parsed_second is None:
+        return None
+    header, sep, body = parsed_first
+    other_header, other_sep, other_body = parsed_second
+    if _normalize_table_row(header) != _normalize_table_row(other_header):
+        return None
+    marker = sep or other_sep
+    lines = [header]
+    if marker:
+        lines.append(marker)
+    lines.extend(body)
+    lines.extend(other_body)
+    return "\n".join(lines)
+
+
+def _parse_pipe_table(text: str) -> tuple[str, str | None, list[str]] | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    for index, line in enumerate(lines[:-1]):
+        if _is_table_row(line) and _is_table_sep(lines[index + 1]):
+            header = line
+            sep = lines[index + 1]
+            body = [item for item in lines[index + 2 :] if _is_table_row(item)]
+            return header, sep, body
+    if all(_is_table_row(line) or _is_table_sep(line) for line in lines):
+        header = lines[0]
+        rest = [line for line in lines[1:] if _is_table_row(line)]
+        if not rest:
+            return None
+        return header, None, rest
+    html_match = _HTML_TABLE_RE.search(text)
+    if html_match and html_match.group(0).strip() == text.strip():
+        return text.strip(), None, []
+    return None
+
+
+def _normalize_table_row(row: str) -> str:
+    cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+    return "|".join(cells)
+
+
+def _split_prose(
+    text: str,
+    *,
+    max_tokens: int,
+    tokenizer: Any | None = None,
+) -> list[str]:
+    separator = "\n\n" if "\n\n" in text else "\n"
+    parts = [part.strip() for part in text.split(separator) if part.strip()]
     if len(parts) <= 1:
-        return _hard_split_text(stripped, max_tokens=max_tokens, tokenizer=tokenizer)
+        return _hard_split_text(text, max_tokens=max_tokens, tokenizer=tokenizer)
 
     packed: list[str] = []
     buffer: list[str] = []
@@ -653,23 +1100,16 @@ def split_oversized_text(
     for part in parts:
         if _token_count(part, tokenizer) > max_tokens:
             flush()
-            if _looks_like_markdown_table(part):
-                packed.extend(
-                    _split_markdown_table(
-                        part, max_tokens=max_tokens, tokenizer=tokenizer
-                    )
-                )
-            else:
-                packed.extend(
-                    _hard_split_text(part, max_tokens=max_tokens, tokenizer=tokenizer)
-                )
+            packed.extend(
+                _hard_split_text(part, max_tokens=max_tokens, tokenizer=tokenizer)
+            )
             continue
         trial = separator.join(buffer + [part]) if buffer else part
         if buffer and _token_count(trial, tokenizer) > max_tokens:
             flush()
         buffer.append(part)
     flush()
-    return packed or [stripped]
+    return packed or [text]
 
 
 def _token_count(text: str, tokenizer: Any | None) -> int:
@@ -694,16 +1134,6 @@ def _hard_split_text(
     return chunk_text(text, chunk_size=window, overlap=overlap)
 
 
-def _looks_like_markdown_table(text: str) -> bool:
-    rows = 0
-    for line in text.splitlines():
-        if _is_table_row(line):
-            rows += 1
-            if rows >= 2:
-                return True
-    return False
-
-
 def _is_table_row(line: str) -> bool:
     stripped = line.strip()
     return bool(_TABLE_ROW_RE.match(stripped)) and stripped.count("|") >= 2
@@ -711,60 +1141,3 @@ def _is_table_row(line: str) -> bool:
 
 def _is_table_sep(line: str) -> bool:
     return bool(_TABLE_SEP_RE.match(line.strip()))
-
-
-def _split_markdown_table(
-    text: str,
-    *,
-    max_tokens: int,
-    tokenizer: Any | None = None,
-) -> list[str]:
-    """Keep whole table rows together and repeat the header in each piece."""
-    lines = text.splitlines()
-    header_idx = None
-    for index, line in enumerate(lines[:-1]):
-        if _is_table_row(line) and _is_table_sep(lines[index + 1]):
-            header_idx = index
-            break
-
-    if header_idx is None:
-        prefix: list[str] = []
-        rows = lines
-        header_block: list[str] = []
-    else:
-        prefix = lines[:header_idx]
-        header_block = [lines[header_idx], lines[header_idx + 1]]
-        rows = lines[header_idx + 2 :]
-
-    packed: list[str] = []
-    buffer_rows: list[str] = []
-
-    def emit(current_rows: list[str]) -> None:
-        if not current_rows and not (prefix and not packed):
-            return
-        parts = []
-        if prefix and not packed:
-            parts.extend(prefix)
-        parts.extend(header_block)
-        parts.extend(current_rows)
-        packed.append("\n".join(part for part in parts if part is not None).strip())
-
-    for row in rows:
-        if not row.strip():
-            continue
-        trial_rows = buffer_rows + [row]
-        trial_parts = []
-        if prefix and not packed:
-            trial_parts.extend(prefix)
-        trial_parts.extend(header_block)
-        trial_parts.extend(trial_rows)
-        trial = "\n".join(trial_parts).strip()
-        if buffer_rows and _token_count(trial, tokenizer) > max_tokens:
-            emit(buffer_rows)
-            buffer_rows = [row]
-            continue
-        buffer_rows.append(row)
-
-    if buffer_rows or (prefix and not packed):
-        emit(buffer_rows)
-    return packed or [text.strip()]
