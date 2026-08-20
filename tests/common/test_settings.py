@@ -38,6 +38,7 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.ollama_top_p == 0.1
     assert settings.ollama_timeout_sec == 420.0
     assert settings.ollama_max_tokens == 4096
+    assert settings.ollama_context_length == 8192
     assert settings.ollama_seed == 0
     assert settings.ollama_draft_reasoning_effort == "medium"
     assert settings.ollama_verifier_reasoning_effort == "high"

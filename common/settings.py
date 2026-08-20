@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     ollama_temperature: float = Field(default=0.0, alias="OLLAMA_TEMPERATURE")
     ollama_top_p: float = Field(default=0.1, ge=0.0, le=1.0, alias="OLLAMA_TOP_P")
     ollama_max_tokens: int = Field(default=4096, ge=1, alias="OLLAMA_MAX_TOKENS")
+    ollama_context_length: int = Field(
+        default=8192,
+        ge=1,
+        alias="OLLAMA_CONTEXT_LENGTH",
+    )
     ollama_seed: int = Field(default=0, alias="OLLAMA_SEED")
     ollama_draft_reasoning_effort: Literal["low", "medium", "high", "max", "none"] = (
         Field(default="medium", alias="OLLAMA_DRAFT_REASONING_EFFORT")
