@@ -24,6 +24,8 @@ class DocumentChunk:
     chunk_index: int = 0
     score: float | None = None
     headings: tuple[str, ...] = ()
+    chunk_type: str = "prose"
+    table_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -148,6 +148,12 @@ def _chunk_from_payload(
         chunk_index=int(payload.get("chunk_index") or 0),
         score=score,
         headings=_headings_from_payload(payload),
+        chunk_type=str(payload.get("chunk_type") or "prose"),
+        table_ref=(
+            str(payload["table_ref"])
+            if payload.get("table_ref")
+            else None
+        ),
     )
 
 

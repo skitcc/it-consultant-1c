@@ -12,6 +12,8 @@ def test_qdrant_retriever_maps_hits() -> None:
         "source_path": "guide.md",
         "chunk_index": 2,
         "headings": ["Обмен данными", "Настройка"],
+        "chunk_type": "table",
+        "table_ref": "#/tables/0",
     }
     hit.score = 0.87
 
@@ -45,6 +47,8 @@ def test_qdrant_retriever_maps_hits() -> None:
             chunk_index=2,
             score=0.87,
             headings=("Обмен данными", "Настройка"),
+            chunk_type="table",
+            table_ref="#/tables/0",
         )
     ]
     client.query_points.assert_called_once()

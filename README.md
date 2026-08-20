@@ -212,7 +212,11 @@ embeddings → upsert.
 `.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm` (`pip install -e ".[reindex]"`).
 Ридер возвращает семантические чанки Docling (`HybridChunker` + `contextualize`),
 с заголовками секций. Каждая таблица Docling (`TableItem`) сериализуется целиком
-в Markdown и кладётся одним чанком без лимита `CHUNK_SIZE`. OCR для PDF выключен.
+в Markdown и кладётся одним Qdrant point без лимита `CHUNK_SIZE`. Для embedding
+большая таблица локально делится на группы строк с общей шапкой и headings,
+векторы групп нормализуются и усредняются; полный Markdown в payload не режется.
+Повторные фрагменты HybridChunker и чанки только из `|---|` отбрасываются.
+OCR для PDF выключен.
 
 Картинки не гоняются через VLM-pipeline на всю страницу. Это **enrichment**:
 обычный convert, затем Ollama VLM (`VLM_MODEL` на том же `OLLAMA_BASE_URL`)
@@ -241,8 +245,9 @@ tests/reindex/
 ## Поток
 
 1. При старте (и при `--once`) — **сверка** каталога с Qdrant по SHA-256 содержимого
-   файлов (коллекция не пересоздаётся). Уже проиндексированные без изменений
-   пропускаются; файлы, которых нет на диске, снимаются из Qdrant.
+   и версии алгоритма индексации (коллекция не пересоздаётся). Уже
+   проиндексированные актуальной версией пропускаются; файлы, которых нет на
+   диске, снимаются из Qdrant.
 2. Без `--once`: `watchdog` рекурсивно наблюдает `WATCH_PATH`.
 3. События create / modify / delete / move копятся с debounce
    (`opened`/`closed` от чтения файлов игнорируются). Пока идёт проход,
@@ -268,7 +273,7 @@ tests/reindex/
 | `RAG_NEIGHBOR_WINDOW` | Соседи в том же heading-разделе (±N); без headings — ±N по `chunk_index` | `1` |
 | `RERANK_ENABLED` / `RERANK_MODEL` | Rerank через Ollama `POST /api/chat` (score `0..1`) | `true` / `dengcao/Qwen3-Reranker-8B:Q8_0` |
 | `RERANK_NUM_PREDICT` | Лимит генерации reranker с учётом thinking; при исчерпании выполняется короткий retry без thinking | `256` |
-| `CHUNK_SIZE` | Max tokens для прозы в HybridChunker; таблицы Docling без лимита | `1024` |
+| `CHUNK_SIZE` | Max tokens для прозы и одной embedding-части таблицы; полный table payload без лимита | `1024` |
 | `PICTURE_DESCRIPTION_ENABLED` | VLM-описания картинок (enrichment) | `true` |
 | `VLM_MODEL` | Vision-модель в том же Ollama | `qwen3-vl:8b` |
 | `VLM_TIMEOUT_SEC` | Таймаут описания одной картинки | `90` |
@@ -314,10 +319,12 @@ Python — в WSL, Qdrant и Ollama — Docker Desktop (`localhost:6333` / `1143
 ## Indexer
 
 По умолчанию используется `QdrantIndexer`. Stub `LoggingIndexer` остаётся для тестов.
-На старте / `--once` — reconcile по SHA-256 (skip неизменённых, dedup копий 1:1).
+На старте / `--once` — reconcile по SHA-256 содержимого и версии индексатора
+(skip неизменённых, dedup копий 1:1).
 Watcher вызывает `apply_changes`: upsert одного изменившегося файла или delete по
 `source_path`. Payload точки: `text`, `source_path`, `chunk_index` (совместимо с RAG),
-плюс `headings` и `file_hash` (SHA-256 содержимого).
+плюс `headings`, `file_hash`, `index_version`, `chunk_type`; для таблиц также
+`table_ref` и `row_count`.
 
 ## Тесты
 
