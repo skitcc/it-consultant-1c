@@ -7,10 +7,11 @@
 | Пакет | Назначение |
 |-------|------------|
 | `common` | Общие настройки (`Settings`) и утилиты |
-| `mail_gateway` | Exchange (EWS Streaming) → Qdrant RAG → Ollama → reply |
+| `mail_gateway` | Exchange (EWS Streaming) → Qdrant RAG → Ollama или vLLM → reply |
 | `reindex` | Следит за каталогом документов и индексирует их в Qdrant |
+| `deploy/inference` | Диагностика Ollama, каталог vLLM, бенчмарки ([GUIDE.md](deploy/inference/GUIDE.md)) |
 
-Общий конфиг — один класс [`common.Settings`](common/settings.py), читается из `.env` / переменных окружения. Оба сервиса используют одни и те же переменные.
+Общий конфиг — один класс [`common.Settings`](common/settings.py), читается из `.env` / переменных окружения. Оба сервиса используют одни и те же переменные. Инференс переключается `INFERENCE_BACKEND=ollama|vllm` (дефолт `ollama` — путь без изменений). Подробности и скрипты GPU-сервера: [`deploy/inference/GUIDE.md`](deploy/inference/GUIDE.md).
 
 ## Установка (разработка)
 
