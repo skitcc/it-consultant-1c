@@ -117,7 +117,7 @@ tests/
 2. Чтение письма → `conversation_id`, `item_id`, `change_key`, текст.
 3. Загрузка треда, очистка тел.
 4. Embedding вопроса → Qdrant `RAG_CANDIDATES` → rerank → `RAG_TOP_K` (соседи в том же разделе по `headings`) → фрагменты в `system_prompt`.
-5. Non-stream вызов Ollama `/v1/chat/completions`: черновик с `reasoning_effort=medium`. Второй проход (`OLLAMA_VERIFIER_ENABLED`) по тем же чанкам с `reasoning_effort=high` по умолчанию выключен.
+5. Non-stream вызов Ollama `/api/chat`: черновик с `think=medium`. Второй проход (`OLLAMA_VERIFIER_ENABLED`) по тем же чанкам с `think=high` по умолчанию выключен.
 6. HTML-reply через EWS (таблицы, без Markdown и ссылок) + список использованных документов в конце.
 7. Сбой, недоставленный ответ или несколько неотвеченных запросов пользователя в той же переписке — WARNING в лог и письмо на `ADMIN_EMAIL`.
 8. При обрыве streaming — reconnect.
@@ -187,10 +187,10 @@ reasoning, Markdown, URL и сносок `[1]`; в конец добавляют
 }
 ```
 
-В Ollama уходит `POST /v1/chat/completions` с `stream=false`, `messages`:
-`system` + история `user`/`assistant` (`body` → `content`), фиксированным seed
-и `reasoning_effort`. Content — HTML-ответ, без JSON Schema и без проверки
-дословных цитат.
+В Ollama уходит `POST /api/chat` с `stream=false`, `messages`:
+`system` + история `user`/`assistant` (`body` → `content`), `think`, `keep_alive=-1`
+и `options` (`temperature`, `top_p`, `seed`, `num_predict`, `num_ctx`, `stop`).
+Content — HTML-ответ, без JSON Schema и без проверки дословных цитат.
 Дополнительные инструкции можно задать через `AI_SYSTEM_PROMPT` (контракт формата
 ответа всё равно добавляется). Модель с Qdrant напрямую не общается — retrieval
 делает `mail_gateway`.
