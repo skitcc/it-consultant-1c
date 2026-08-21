@@ -8,6 +8,7 @@ import math
 import re
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import httpx
@@ -43,6 +44,7 @@ Use this scale:
 
 The final answer must be exactly one number from 0.00 to 1.00. Do not put an
 explanation, label, percent sign, or any other text in the final answer."""
+
 _DEFAULT_INSTRUCT = (
     "Given a user question about 1C and company IT documentation, "
     "score how completely and precisely this passage can answer the query"
@@ -72,12 +74,7 @@ class ScorePassthroughReranker:
 
 
 class OllamaReranker:
-    """Score candidates with a Qwen3-Reranker via Ollama ``POST /api/chat``.
-
-    Ollama has no ``/api/rerank``; we send an Instruct/Query/Document chat turn
-    and require a numeric relevance score. Legacy yes/no and logprob responses
-    remain supported as a compatibility fallback.
-    """
+    """Score candidates with a Qwen3-Reranker via Ollama ``POST /api/chat``."""
 
     def __init__(
         self,
@@ -85,14 +82,16 @@ class OllamaReranker:
         base_url: str = "http://127.0.0.1:11434",
         model: str = _QWEN_MODEL,
         timeout_sec: float = 60.0,
-        num_predict: int = 256,
+        num_predict: int = 16, 
         instruct: str = _DEFAULT_INSTRUCT,
+        max_parallel_workers: int = 2,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_sec
         self._num_predict = num_predict
         self._instruct = instruct
+        self._max_workers = max_parallel_workers
         self._fallback = ScorePassthroughReranker()
 
     def rerank(
@@ -111,18 +110,17 @@ class OllamaReranker:
 
         started_at = time.perf_counter()
         logger.info(
-            "Rerank started model=%s candidates=%s query_chars=%s num_predict=%s",
+            "Rerank started model=%s candidates=%s query_chars=%s workers=%s",
             self._model,
             len(items),
             len(query.strip()),
-            self._num_predict,
+            self._max_workers,
         )
         try:
             scores = self._score_documents(query, items)
         except Exception:
             logger.exception(
-                "Rerank failed model=%s elapsed=%.3fs; "
-                "falling back to vector scores",
+                "Rerank failed model=%s elapsed=%.3fs; falling back to vector scores",
                 self._model,
                 time.perf_counter() - started_at,
             )
@@ -130,8 +128,7 @@ class OllamaReranker:
 
         if scores is None or len(scores) != len(items):
             logger.warning(
-                "Rerank returned unexpected scores model=%s elapsed=%.3fs; "
-                "using vector scores",
+                "Rerank returned unexpected scores model=%s elapsed=%.3fs; using vector scores",
                 self._model,
                 time.perf_counter() - started_at,
             )
@@ -142,10 +139,8 @@ class OllamaReranker:
             key=lambda pair: pair[1],
             reverse=True,
         )
-        ranked = [
-            replace(chunk, score=score)
-            for chunk, score in scored
-        ]
+        ranked = [replace(chunk, score=score) for chunk, score in scored]
+        
         for rank, (chunk, score) in enumerate(scored, start=1):
             logger.debug(
                 "Rerank ranking rank=%s source=%r chunk_index=%s "
@@ -171,55 +166,46 @@ class OllamaReranker:
         query: str,
         chunks: Sequence[DocumentChunk],
     ) -> list[float] | None:
-        scores: list[float] = []
-        parsed = 0
-        with httpx.Client(timeout=self._timeout) as client:
-            for position, chunk in enumerate(chunks, start=1):
-                started_at = time.perf_counter()
-                logger.debug(
-                    "Rerank candidate start candidate=%s/%s source=%r "
-                    "chunk_index=%s vector_score=%s chars=%s",
-                    position,
-                    len(chunks),
-                    chunk.source_path,
-                    chunk.chunk_index,
-                    _format_score(chunk.score),
-                    len(chunk.text),
-                )
-                score = None
-                try:
+        """Score candidates concurrently using ThreadPoolExecutor."""
+        indexed_chunks = list(enumerate(chunks, start=1))
+        workers = min(self._max_workers, len(chunks))
+
+        def _evaluate_single(item: tuple[int, DocumentChunk]) -> tuple[int, float | None]:
+            pos, chunk = item
+            started = time.perf_counter()
+            score = None
+            try:
+                with httpx.Client(timeout=self._timeout) as client:
+                    # 👈 3. Сразу запрашиваем быстрый скоринг БЕЗ thinking
                     score = self._score_document(client, query, chunk.text)
-                finally:
-                    elapsed = time.perf_counter() - started_at
-                    record(f"rerank_{position}/{len(chunks)}", elapsed)
-                if score is None:
-                    scores.append(0.0)
-                    logger.info(
-                        "Rerank candidate done candidate=%s/%s source=%r "
-                        "chunk_index=%s parsed=false rerank_score=0.0000 "
-                        "elapsed=%.3fs",
-                        position,
-                        len(chunks),
-                        chunk.source_path,
-                        chunk.chunk_index,
-                        elapsed,
-                    )
-                    continue
-                parsed += 1
-                scores.append(score)
+            except Exception:
+                score = None
+            finally:
+                elapsed = time.perf_counter() - started
+                record(f"rerank_{pos}/{len(chunks)}", elapsed)
                 logger.info(
                     "Rerank candidate done candidate=%s/%s source=%r "
-                    "chunk_index=%s parsed=true rerank_score=%.4f elapsed=%.3fs",
-                    position,
+                    "chunk_index=%s parsed=%s rerank_score=%s elapsed=%.3fs",
+                    pos,
                     len(chunks),
                     chunk.source_path,
                     chunk.chunk_index,
-                    score,
+                    score is not None,
+                    _format_score(score),
                     elapsed,
                 )
-        if parsed == 0:
+            return pos, score
+
+        # Запускаем параллельно в workers потоков
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_evaluate_single, indexed_chunks))
+
+        scores_map = {pos: (score if score is not None else 0.0) for pos, score in results}
+        parsed_count = sum(1 for _, s in results if s is not None)
+
+        if parsed_count == 0:
             return None
-        return scores
+        return [scores_map[i] for i in range(1, len(chunks) + 1)]
 
     def _score_document(
         self,
@@ -227,16 +213,17 @@ class OllamaReranker:
         query: str,
         document: str,
     ) -> float | None:
-        score = self._request_score(client, query, document, disable_thinking=False)
+        # 👈 4. Основной быстрый путь: thinking отключен! (работает 0.3 сек)
+        score = self._request_score(client, query, document, disable_thinking=True)
         if score is not None:
             return score
 
+        # Если вдруг ответ не распарсился — пробуем с thinking как fallback
         logger.warning(
-            "Reranker returned no valid 0..1 score model=%s; "
-            "retrying with thinking disabled",
+            "Reranker returned no valid score model=%s; retrying with thinking enabled",
             self._model,
         )
-        return self._request_score(client, query, document, disable_thinking=True)
+        return self._request_score(client, query, document, disable_thinking=False)
 
     def _request_score(
         self,
@@ -257,23 +244,25 @@ class OllamaReranker:
             "logprobs": True,
             "top_logprobs": 8,
             "format": _SCORE_FORMAT,
+            "think": not disable_thinking,  # 👈 5. "think": False отключает рассуждения
             "keep_alive": -1,
             "options": {
                 "temperature": 0.0,
                 "num_ctx": 2048,
-                "num_predict": 16 if disable_thinking else self._num_predict,
+                "num_predict": 16 if disable_thinking else 256,
             },
         }
         if disable_thinking:
             payload["think"] = False
+
         response = client.post(f"{self._base_url}/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
         score = score_from_ollama_response(data)
+        
         logger.debug(
             "Rerank Ollama response model=%s thinking_disabled=%s "
-            "elapsed=%.3fs done_reason=%s prompt_tokens=%s generated_tokens=%s "
-            "score=%s",
+            "elapsed=%.3fs done_reason=%s prompt_tokens=%s generated_tokens=%s score=%s",
             self._model,
             disable_thinking,
             time.perf_counter() - started_at,
@@ -282,15 +271,6 @@ class OllamaReranker:
             data.get("eval_count") if isinstance(data, dict) else None,
             _format_score(score),
         )
-        if score is None:
-            logger.debug(
-                "Unparseable reranker response model=%s disable_thinking=%s "
-                "done_reason=%s content=%r",
-                self._model,
-                disable_thinking,
-                data.get("done_reason") if isinstance(data, dict) else None,
-                _response_content(data),
-            )
         return score
 
 
@@ -303,7 +283,6 @@ def _user_content(instruct: str, query: str, document: str) -> str:
 
 
 def score_from_ollama_response(data: object) -> float | None:
-    """Prefer P(yes) from logprobs; otherwise parse yes/no (or a number) from text."""
     if not isinstance(data, dict):
         return None
     from_logprobs = score_from_logprobs(data)
@@ -335,7 +314,6 @@ def _format_score(score: float | None) -> str:
 
 
 def score_from_logprobs(payload: object) -> float | None:
-    """Softmax of yes vs no token logprobs at the first generated token."""
     if not isinstance(payload, dict):
         return None
     yes_lp: float | None = None
@@ -372,7 +350,6 @@ def _iter_token_logprobs(payload: dict) -> list[tuple[str, float]]:
             entries = list(content)
         else:
             entries = [raw]
-    # First generated token is enough for Qwen3 yes/no.
     for entry in entries[:1]:
         _collect_logprob_pairs(entry, pairs)
         if pairs:
@@ -412,7 +389,6 @@ def _normalize_token(token: str) -> str:
 
 
 def parse_relevance_score(text: str) -> float | None:
-    """Parse yes/no or a numeric score from model text."""
     cleaned = _THINK_RE.sub("", text).strip()
     if not cleaned:
         return None
