@@ -27,6 +27,7 @@ _ALLOWED_TAGS = frozenset(
         "th",
         "td",
         "br",
+        "a",
     }
 )
 _VOID_TAGS = frozenset({"br"})
@@ -48,6 +49,7 @@ _TAG_STYLES = {
     "h3": "margin:14px 0 8px 0;font-size:14px;",
     "ul": "margin:0 0 10px 20px;",
     "ol": "margin:0 0 10px 20px;",
+    "a": "color:#0563c1;text-decoration:underline;",
 }
 
 _CITATION_RE = re.compile(
@@ -55,7 +57,11 @@ _CITATION_RE = re.compile(
     re.IGNORECASE,
 )
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_URL_RE = re.compile(r"(https?://[^\s<>]+|www\.[^\s<>]+)", re.IGNORECASE)
+_BARE_URL_RE = re.compile(
+    r'(?<!href=")(?<!href=\')((?:https?://|mailto:|www\.)[^\s<>"]+)',
+    re.IGNORECASE,
+)
+_SAFE_HREF_RE = re.compile(r"^(https?://|mailto:)", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^```(?:\w+)?\s*$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _UL_RE = re.compile(r"^[-*]\s+(.*)$")
@@ -92,12 +98,10 @@ def render_answer(text: str, *, source_names: Sequence[str] = ()) -> str:
 
 def strip_disallowed_markup(text: str) -> str:
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    without_links = _MD_LINK_RE.sub(r"\1", normalized)
-    without_citations = _CITATION_RE.sub("", without_links)
-    without_urls = _URL_RE.sub("", without_citations)
-    without_urls = re.sub(r"[ \t]{2,}", " ", without_urls)
-    without_urls = re.sub(r" +\n", "\n", without_urls)
-    return without_urls.strip()
+    without_citations = _CITATION_RE.sub("", normalized)
+    without_citations = re.sub(r"[ \t]{2,}", " ", without_citations)
+    without_citations = re.sub(r" +\n", "\n", without_citations)
+    return without_citations.strip()
 
 
 def strip_sources_footer(text: str) -> str:
@@ -186,7 +190,43 @@ def _inline(text: str) -> str:
     escaped = escape(text.strip())
     escaped = _BOLD_RE.sub(r"<strong>\1</strong>", escaped)
     escaped = _ITALIC_RE.sub(r"<em>\1</em>", escaped)
-    return escaped
+    return _autolink(escaped)
+
+
+def _safe_href(url: str | None) -> str | None:
+    value = unescape((url or "").strip()).strip("<>").rstrip(".,;:)*")
+    if not value:
+        return None
+    if value.lower().startswith("www."):
+        value = "http://" + value
+    if not _SAFE_HREF_RE.match(value):
+        return None
+    if any(char.isspace() for char in value):
+        return None
+    return value
+
+
+def _anchor(label: str, href: str) -> str:
+    return f'<a href="{escape(href, quote=True)}">{label}</a>'
+
+
+def _autolink(escaped: str) -> str:
+    def replace_markdown(match: re.Match[str]) -> str:
+        href = _safe_href(match.group(2))
+        label = match.group(1)
+        if href is None:
+            return label
+        return _anchor(label, href)
+
+    text = _MD_LINK_RE.sub(replace_markdown, escaped)
+
+    def replace_bare(match: re.Match[str]) -> str:
+        href = _safe_href(match.group(1))
+        if href is None:
+            return match.group(0)
+        return _anchor(escape(href), href)
+
+    return _BARE_URL_RE.sub(replace_bare, text)
 
 
 def _is_table_row(line: str) -> bool:
@@ -272,17 +312,33 @@ class _HtmlSanitizer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._parts: list[str] = []
         self._skip = 0
+        self._unwrap_a = 0
+        self._in_a = 0
 
     def result(self) -> str:
         return "".join(self._parts)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        del attrs
         tag = _TAG_ALIASES.get(tag.lower(), tag.lower())
         if tag in _SKIP_TAGS:
             self._skip += 1
             return
         if self._skip or tag not in _ALLOWED_TAGS:
+            return
+        if tag == "a":
+            href = None
+            for key, value in attrs:
+                if key.lower() == "href":
+                    href = _safe_href(value)
+                    break
+            if href is None:
+                self._unwrap_a += 1
+                return
+            style = _TAG_STYLES["a"]
+            self._in_a += 1
+            self._parts.append(
+                f'<a href="{escape(href, quote=True)}" style="{style}">'
+            )
             return
         style = _TAG_STYLES.get(tag)
         if style:
@@ -297,18 +353,34 @@ class _HtmlSanitizer(HTMLParser):
         if tag in _SKIP_TAGS and self._skip:
             self._skip -= 1
             return
+        if tag == "a" and self._unwrap_a:
+            self._unwrap_a -= 1
+            return
         if self._skip or tag not in _ALLOWED_TAGS or tag in _VOID_TAGS:
             return
+        if tag == "a" and self._in_a:
+            self._in_a -= 1
         self._parts.append(f"</{tag}>")
 
     def handle_data(self, data: str) -> None:
         if self._skip or not data:
             return
-        self._parts.append(escape(unescape(data)))
+        escaped = escape(unescape(data))
+        if self._in_a:
+            self._parts.append(escaped)
+        else:
+            self._parts.append(_autolink(escaped))
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = _TAG_ALIASES.get(tag.lower(), tag.lower())
         if self._skip or tag not in _ALLOWED_TAGS:
+            return
+        if tag == "a":
+            self.handle_starttag(tag, attrs)
+            if self._unwrap_a:
+                self._unwrap_a -= 1
+                return
+            self.handle_endtag(tag)
             return
         if tag in _VOID_TAGS:
             self._parts.append(f"<{tag}>")

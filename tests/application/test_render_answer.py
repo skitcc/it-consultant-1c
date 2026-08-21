@@ -22,8 +22,9 @@ def test_render_answer_strips_numeric_citations_and_markdown() -> None:
     assert "[1]" not in html
     assert "[3]" not in html
     assert "фрагмент" not in html.lower()
-    assert "https://" not in html
-    assert "href=" not in html
+    assert 'href="https://example.com"' in html
+    assert 'href="https://intranet/doc"' in html
+    assert ">док</a>" in html
     assert "**" not in html
     assert "###" not in html
     assert "<strong>Ответ:</strong>" in html or "Ответ:" in html
@@ -50,17 +51,38 @@ def test_render_answer_converts_pipe_table() -> None:
     assert "border:1px solid" in html
 
 
-def test_render_answer_strips_unsafe_html_and_links() -> None:
+def test_render_answer_keeps_safe_links_and_strips_unsafe_html() -> None:
     html = render_answer(
-        '<p>ok</p><script>alert(1)</script><a href="http://x">x</a><img src="http://x">',
+        '<p>ok <a href="https://ovpn.1c-perspective.ru:943">VPN</a></p>'
+        '<script>alert(1)</script>'
+        '<a href="javascript:alert(1)">xss</a>'
+        '<img src="http://x">',
         source_names=[],
     )
     assert "<script" not in html
-    assert "<a " not in html
-    assert "href=" not in html
     assert "<img" not in html
     assert "src=" not in html
+    assert "javascript:" not in html
+    assert 'href="https://ovpn.1c-perspective.ru:943"' in html
+    assert ">VPN</a>" in html
+    assert "xss" in html
     assert NO_SOURCES_TEXT in html
+
+
+def test_render_answer_keeps_documentation_resource_links() -> None:
+    raw = """
+<p>Корпоративные ресурсы:</p>
+<ul>
+<li><a href="https://mail.1c-perspective.ru">Электронная почта</a></li>
+<li><a href="https://ovpn.1c-perspective.ru:943">Сервис ВПН-подключения</a></li>
+<li>Общие сетевые папки: \\\\pers.local\\Common</li>
+</ul>
+"""
+    html = render_answer(raw, source_names=["Памятка - Корпоративные ресурсы.pdf"])
+    assert 'href="https://mail.1c-perspective.ru"' in html
+    assert 'href="https://ovpn.1c-perspective.ru:943"' in html
+    assert "\\\\pers.local\\Common" in html
+    assert "javascript:" not in html
 
 
 def test_strip_sources_footer_from_history() -> None:

@@ -169,7 +169,8 @@ Instruct/Query/Document → числовой score `0.00..1.00`), дополня
 Ответ пользователю строится черновиком одной `OLLAMA_MODEL`. Второй проход
 по тем же чанкам (`OLLAMA_VERIFIER_ENABLED`) по умолчанию выключен: он правит
 явные ошибки и не отбрасывает ответ из‑за цитат. В письмо уходит HTML без
-reasoning, Markdown, URL и сносок `[1]`; в конец добавляются имена документов.
+reasoning, Markdown и сносок `[1]`; ссылки из документации сохраняются как
+`<a href>`; в конец добавляются имена документов.
 
 Параметры генерации: `OLLAMA_TEMPERATURE=0`, `OLLAMA_TOP_P=0.1`,
 `OLLAMA_MAX_TOKENS=4096`, `OLLAMA_CONTEXT_LENGTH=8192`, `OLLAMA_SEED=0`,

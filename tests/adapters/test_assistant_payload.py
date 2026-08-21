@@ -104,6 +104,8 @@ def test_default_system_prompt_requires_grounded_formal_answers() -> None:
     assert "HTML-ответ" in DEFAULT_SYSTEM_PROMPT
     assert "дословной непрерывной цитатой" not in DEFAULT_SYSTEM_PROMPT
     assert "без Markdown" in DEFAULT_SYSTEM_PROMPT
+    assert "<a href=" in DEFAULT_SYSTEM_PROMPT
+    assert "без URL и без любых ссылок" not in DEFAULT_SYSTEM_PROMPT
     assert "K0" not in DEFAULT_SYSTEM_PROMPT
     assert "K1" not in DEFAULT_SYSTEM_PROMPT
     assert OUTPUT_CONTRACT in DEFAULT_SYSTEM_PROMPT
