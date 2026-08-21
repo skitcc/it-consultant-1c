@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from common import Settings
@@ -20,6 +21,7 @@ from mail_gateway.adapters.rag.ollama_reranker import (
 from mail_gateway.adapters.rag.qdrant_retriever import QdrantRetriever
 from mail_gateway.adapters.rag.reranking_retriever import RerankingRetriever
 from mail_gateway.application.handle_incoming_mail import HandleIncomingMail
+from mail_gateway.application.mail_queue import IncomingMailQueue, enqueue_and_notify
 from mail_gateway.ports import DocumentRetriever, Reranker
 
 logger = logging.getLogger(__name__)
@@ -137,7 +139,7 @@ def run(settings: Settings | None = None) -> None:
     logger.info(
         "Mail gateway started mailbox=%s ollama=%s model=%s qdrant=%s "
         "collection=%s rag_candidates=%s rag_top_k=%s rerank=%s verifier=%s "
-        "admin=%s",
+        "admin=%s queue_wait_minutes=%s",
         settings.ews_email,
         settings.ollama_base_url,
         settings.ollama_model,
@@ -148,37 +150,71 @@ def run(settings: Settings | None = None) -> None:
         settings.rerank_enabled,
         settings.ollama_verifier_enabled,
         settings.admin_email or "-",
+        settings.queue_wait_minutes,
     )
 
+    mail_queue = IncomingMailQueue()
+    threading.Thread(
+        target=_listen_forever,
+        args=(
+            listener,
+            mail_queue,
+            sender,
+            settings.queue_wait_minutes,
+            settings.reconnect_delay_sec,
+        ),
+        name="ews-listener",
+        daemon=True,
+    ).start()
+
+    while True:
+        message = mail_queue.take()
+        try:
+            started_at = time.perf_counter()
+            logger.info(
+                "Pipeline start conversation_id=%s item_id=%s",
+                message.conversation_id,
+                message.item_id,
+            )
+            handle(message)
+            logger.info(
+                "Pipeline complete conversation_id=%s elapsed=%.3fs",
+                message.conversation_id,
+                time.perf_counter() - started_at,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to handle message conversation_id=%s item_id=%s",
+                message.conversation_id,
+                message.item_id,
+            )
+        finally:
+            mail_queue.done()
+
+
+def _listen_forever(
+    listener: EwsMailListener,
+    mail_queue: IncomingMailQueue,
+    sender: EwsMailSender,
+    wait_minutes: int,
+    reconnect_delay_sec: float,
+) -> None:
     while True:
         try:
             for message in listener.listen():
-                try:
-                    started_at = time.perf_counter()
-                    logger.info(
-                        "Pipeline start conversation_id=%s item_id=%s",
-                        message.conversation_id,
-                        message.item_id,
-                    )
-                    handle(message)
-                    logger.info(
-                        "Pipeline complete conversation_id=%s elapsed=%.3fs",
-                        message.conversation_id,
-                        time.perf_counter() - started_at,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to handle message conversation_id=%s item_id=%s",
-                        message.conversation_id,
-                        message.item_id,
-                    )
+                enqueue_and_notify(
+                    mail_queue,
+                    sender,
+                    message,
+                    minutes_each=wait_minutes,
+                )
             logger.warning(
                 "EWS streaming ended; reconnecting in %s sec",
-                settings.reconnect_delay_sec,
+                reconnect_delay_sec,
             )
         except Exception:
             logger.exception(
                 "EWS listener error; reconnecting in %s sec",
-                settings.reconnect_delay_sec,
+                reconnect_delay_sec,
             )
-        time.sleep(settings.reconnect_delay_sec)
+        time.sleep(reconnect_delay_sec)

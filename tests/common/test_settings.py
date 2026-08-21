@@ -47,3 +47,4 @@ def test_settings_mail_and_reindex_fields() -> None:
     assert settings.debounce_seconds == 1.5
     assert settings.log_level == "DEBUG"
     assert settings.admin_email is None
+    assert settings.queue_wait_minutes == 3

@@ -62,6 +62,7 @@ class Settings(BaseSettings):
 
     reconnect_delay_sec: float = Field(default=5.0, alias="RECONNECT_DELAY_SEC")
     admin_email: str | None = Field(default=None, alias="ADMIN_EMAIL")
+    queue_wait_minutes: int = Field(default=3, ge=1, alias="QUEUE_WAIT_MINUTES")
 
     # --- RAG / Qdrant (shared by mail_gateway and reindex) ---
     qdrant_url: str = Field(default="http://127.0.0.1:6333", alias="QDRANT_URL")
