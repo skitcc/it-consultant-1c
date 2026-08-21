@@ -213,12 +213,10 @@ class OllamaReranker:
         query: str,
         document: str,
     ) -> float | None:
-        # 👈 4. Основной быстрый путь: thinking отключен! (работает 0.3 сек)
         score = self._request_score(client, query, document, disable_thinking=True)
         if score is not None:
             return score
 
-        # Если вдруг ответ не распарсился — пробуем с thinking как fallback
         logger.warning(
             "Reranker returned no valid score model=%s; retrying with thinking enabled",
             self._model,
@@ -244,7 +242,7 @@ class OllamaReranker:
             "logprobs": True,
             "top_logprobs": 8,
             "format": _SCORE_FORMAT,
-            "think": not disable_thinking,  # 👈 5. "think": False отключает рассуждения
+            "think": not disable_thinking, 
             "keep_alive": -1,
             "options": {
                 "temperature": 0.0,
