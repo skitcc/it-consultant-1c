@@ -9,6 +9,7 @@ from exchangelib import Account, Message, Q
 from exchangelib.properties import ConversationId
 
 from mail_gateway.application.clean_email_body import clean_email_body
+from mail_gateway.application.mail_queue import is_queue_notice
 from mail_gateway.application.render_answer import strip_sources_footer
 from mail_gateway.domain.models import ConversationTurn
 from mail_gateway.ports import ConversationHistoryLoader
@@ -121,6 +122,13 @@ class EwsConversationHistoryLoader(ConversationHistoryLoader):
             if not body:
                 logger.info(
                     "Skipping empty/cleaned message item_id=%s conversation_id=%s",
+                    item.id,
+                    conversation_id,
+                )
+                continue
+            if is_queue_notice(body):
+                logger.info(
+                    "Skipping queue notice item_id=%s conversation_id=%s",
                     item.id,
                     conversation_id,
                 )
