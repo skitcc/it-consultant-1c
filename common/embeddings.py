@@ -9,7 +9,6 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _KEEP_ALIVE = -1
-_NUM_CTX = 2048
 
 
 class OllamaEmbedder:
@@ -55,7 +54,6 @@ class OllamaEmbedder:
                     "model": self._model,
                     "input": cleaned,
                     "keep_alive": _KEEP_ALIVE,
-                    "options": {"num_ctx": _NUM_CTX},
                 },
             )
             response.raise_for_status()

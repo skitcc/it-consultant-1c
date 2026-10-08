@@ -146,7 +146,6 @@ class OllamaAssistant(Assistant):
                 "top_p": self._top_p,
                 "seed": self._seed,
                 "num_predict": self._max_tokens,
-                "num_ctx": self._context_length,
                 "stop": list(_STOP_SEQUENCES),
             },
         }

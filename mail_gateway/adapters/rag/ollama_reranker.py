@@ -246,7 +246,6 @@ class OllamaReranker:
             "keep_alive": -1,
             "options": {
                 "temperature": 0.0,
-                "num_ctx": 2048,
                 "num_predict": 16 if disable_thinking else 256,
             },
         }

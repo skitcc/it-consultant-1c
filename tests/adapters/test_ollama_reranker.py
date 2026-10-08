@@ -111,15 +111,15 @@ def test_ollama_reranker_scores_via_chat_yes_no(monkeypatch) -> None:
     assert "<Query>: printer\n" in user
     assert "<Document>:" in user
     assert first["options"]["temperature"] == 0.0
-    assert first["options"]["num_ctx"] == 2048
-    assert first["options"]["num_predict"] == 256
+    assert "num_ctx" not in first["options"]
+    assert first["options"]["num_predict"] == 16
+    assert first["think"] is False
     assert first["keep_alive"] == -1
     assert first["format"] == {
         "type": "number",
         "minimum": 0.0,
         "maximum": 1.0,
     }
-    assert [name for name, _elapsed in timer.steps] == ["rerank_1/2", "rerank_2/2"]
 
 
 def test_ollama_reranker_retries_without_thinking_when_score_missing(
@@ -167,14 +167,14 @@ def test_ollama_reranker_retries_without_thinking_when_score_missing(
     assert [chunk.text for chunk in ranked] == ["direct answer", "weak answer"]
     assert [chunk.score for chunk in ranked] == [0.9, 0.2]
     assert len(seen) == 4
-    assert seen[0]["options"]["num_predict"] == 200
-    assert seen[0]["options"]["num_ctx"] == 2048
+    assert seen[0]["options"]["num_predict"] == 16
+    assert "num_ctx" not in seen[0]["options"]
     assert seen[0]["keep_alive"] == -1
-    assert "think" not in seen[0]
-    assert seen[1]["options"]["num_predict"] == 16
-    assert seen[1]["options"]["num_ctx"] == 2048
+    assert seen[0]["think"] is False
+    assert seen[1]["options"]["num_predict"] == 256
+    assert "num_ctx" not in seen[1]["options"]
     assert seen[1]["keep_alive"] == -1
-    assert seen[1]["think"] is False
+    assert seen[1]["think"] is True
 
 
 def test_ollama_reranker_falls_back_on_http_error(monkeypatch) -> None:

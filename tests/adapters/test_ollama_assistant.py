@@ -126,7 +126,7 @@ def test_ollama_assistant_uses_native_chat_api_and_two_think_levels(
         assert item["json"]["options"]["top_p"] == 0.1
         assert item["json"]["options"]["num_predict"] == 4096
         assert item["json"]["options"]["seed"] == 0
-        assert item["json"]["options"]["num_ctx"] == 8192
+        assert "num_ctx" not in item["json"]["options"]
         assert item["json"]["options"]["stop"] == ["\nПользователь:", "\nUser:"]
         assert "response_format" not in item["json"]
         assert rag in item["json"]["messages"][0]["content"]

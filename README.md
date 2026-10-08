@@ -191,7 +191,7 @@ reasoning, Markdown и сносок `[1]`; ссылки из документа�
 
 В Ollama уходит `POST /api/chat` с `stream=false`, `messages`:
 `system` + история `user`/`assistant` (`body` → `content`), `think`, `keep_alive=-1`
-и `options` (`temperature`, `top_p`, `seed`, `num_predict`, `num_ctx`, `stop`).
+и `options` (`temperature`, `top_p`, `seed`, `num_predict`, `stop`). `num_ctx` не передаётся: окно контекста берёт Ollama.
 Content — HTML-ответ, без JSON Schema и без проверки дословных цитат.
 Дополнительные инструкции можно задать через `AI_SYSTEM_PROMPT` (контракт формата
 ответа всё равно добавляется). Модель с Qdrant напрямую не общается — retrieval
