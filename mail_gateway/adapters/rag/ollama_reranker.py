@@ -8,7 +8,6 @@ import math
 import re
 import time
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import httpx
@@ -49,7 +48,7 @@ _DEFAULT_INSTRUCT = (
     "Given a user question about 1C and company IT documentation, "
     "score how completely and precisely this passage can answer the query"
 )
-_QWEN_MODEL = "dengcao/Qwen3-Reranker-8B:Q8_0"
+_QWEN_MODEL = "Qwen3-Reranker-8B:Q8_0-4k"
 _SCORE_FORMAT = {
     "type": "number",
     "minimum": 0.0,
@@ -82,16 +81,14 @@ class OllamaReranker:
         base_url: str = "http://127.0.0.1:11434",
         model: str = _QWEN_MODEL,
         timeout_sec: float = 60.0,
-        num_predict: int = 16, 
+        num_predict: int = 16,
         instruct: str = _DEFAULT_INSTRUCT,
-        max_parallel_workers: int = 2,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_sec
         self._num_predict = num_predict
         self._instruct = instruct
-        self._max_workers = max_parallel_workers
         self._fallback = ScorePassthroughReranker()
 
     def rerank(
@@ -110,11 +107,10 @@ class OllamaReranker:
 
         started_at = time.perf_counter()
         logger.info(
-            "Rerank started model=%s candidates=%s query_chars=%s workers=%s",
+            "Rerank started model=%s candidates=%s query_chars=%s",
             self._model,
             len(items),
             len(query.strip()),
-            self._max_workers,
         )
         try:
             scores = self._score_documents(query, items)
@@ -166,27 +162,22 @@ class OllamaReranker:
         query: str,
         chunks: Sequence[DocumentChunk],
     ) -> list[float] | None:
-        """Score candidates concurrently using ThreadPoolExecutor."""
-        indexed_chunks = list(enumerate(chunks, start=1))
-        workers = min(self._max_workers, len(chunks))
-
-        def _evaluate_single(item: tuple[int, DocumentChunk]) -> tuple[int, float | None]:
-            pos, chunk = item
-            started = time.perf_counter()
-            score = None
-            try:
-                with httpx.Client(timeout=self._timeout) as client:
-                    # 👈 3. Сразу запрашиваем быстрый скоринг БЕЗ thinking
-                    score = self._score_document(client, query, chunk.text)
-            except Exception:
+        scores: list[float] = []
+        parsed = 0
+        with httpx.Client(timeout=self._timeout) as client:
+            for position, chunk in enumerate(chunks, start=1):
+                started = time.perf_counter()
                 score = None
-            finally:
+                try:
+                    score = self._score_document(client, query, chunk.text)
+                except Exception:
+                    score = None
                 elapsed = time.perf_counter() - started
-                record(f"rerank_{pos}/{len(chunks)}", elapsed)
+                record(f"rerank_{position}/{len(chunks)}", elapsed)
                 logger.info(
                     "Rerank candidate done candidate=%s/%s source=%r "
                     "chunk_index=%s parsed=%s rerank_score=%s elapsed=%.3fs",
-                    pos,
+                    position,
                     len(chunks),
                     chunk.source_path,
                     chunk.chunk_index,
@@ -194,18 +185,14 @@ class OllamaReranker:
                     _format_score(score),
                     elapsed,
                 )
-            return pos, score
-
-        # Запускаем параллельно в workers потоков
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            results = list(executor.map(_evaluate_single, indexed_chunks))
-
-        scores_map = {pos: (score if score is not None else 0.0) for pos, score in results}
-        parsed_count = sum(1 for _, s in results if s is not None)
-
-        if parsed_count == 0:
+                if score is None:
+                    scores.append(0.0)
+                    continue
+                parsed += 1
+                scores.append(score)
+        if parsed == 0:
             return None
-        return [scores_map[i] for i in range(1, len(chunks) + 1)]
+        return scores
 
     def _score_document(
         self,

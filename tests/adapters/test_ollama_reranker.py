@@ -120,6 +120,7 @@ def test_ollama_reranker_scores_via_chat_yes_no(monkeypatch) -> None:
         "minimum": 0.0,
         "maximum": 1.0,
     }
+    assert [name for name, _elapsed in timer.steps] == ["rerank_1/2", "rerank_2/2"]
 
 
 def test_ollama_reranker_retries_without_thinking_when_score_missing(
